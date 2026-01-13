@@ -11,6 +11,9 @@ import opennlp.tools.postag.POSTaggerME;
 import opennlp.tools.tokenize.Tokenizer;
 import opennlp.tools.tokenize.TokenizerME;
 import opennlp.tools.tokenize.TokenizerModel;
+import javax.swing.table.DefaultTableModel;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 
 import javax.imageio.ImageIO;
 import javax.swing.*;
@@ -52,7 +55,9 @@ public class OfflineTutorApp extends JFrame {
     private List<QuizItem> easyQuestions = new ArrayList<>();
     private List<QuizItem> hardQuestions = new ArrayList<>();
     private Set<String> askedQuestionIDs = new HashSet<>();
+    private List<QuizItem> sessionLog = new ArrayList<>();
     private QuizItem currentQuestion;
+
 
     // --- Logic & Data ---
     private int questionCounter = 0; // New variable to track question number
@@ -68,6 +73,7 @@ public class OfflineTutorApp extends JFrame {
         String questionText;
         String displaySentence; // Store the original, unedited sentence here
         String correctAnswer;
+        String userProvidedAnswer = "";
         List<String> options;
         String originalContext;
 
@@ -122,50 +128,62 @@ public class OfflineTutorApp extends JFrame {
     private class SplashScreen extends JDialog {
         public SplashScreen() {
             setUndecorated(true);
-            setSize(800, 450);
+            setSize(800, 480);
             setLocationRelativeTo(null);
 
-            // Load the GIF
             ImageIcon backgroundGif = new ImageIcon("background.gif");
+
+            // Use a LayeredPane so the Quit button can sit "on top" of everything easily
+            JLayeredPane layeredPane = new JLayeredPane();
+            layeredPane.setPreferredSize(new Dimension(800, 480));
 
             JPanel contentPane = new JPanel(new GridBagLayout()) {
                 @Override
                 protected void paintComponent(Graphics g) {
                     super.paintComponent(g);
-                    // 1. Draw the GIF as the background
                     if (backgroundGif != null) {
                         g.drawImage(backgroundGif.getImage(), 0, 0, getWidth(), getHeight(), this);
-                    } else {
-                        // Fallback color if GIF is missing
-                        g.setColor(new Color(169, 169, 169));
-                        g.fillRect(0, 0, getWidth(), getHeight());
                     }
-
-                    // 2. Draw the Wavy Graphic Overlay (Optional - if your GIF doesn't have it)
-                    Graphics2D g2d = (Graphics2D) g;
-                    g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                    g2d.setColor(new Color(255, 255, 255, 40)); // Faint white
-                    g2d.setStroke(new BasicStroke(40, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                    // Simple squiggle on the right
-                    g2d.drawArc(getWidth()-200, 50, 150, 150, 0, 180);
-                    g2d.drawArc(getWidth()-250, 180, 150, 150, 180, 180);
                 }
             };
+            contentPane.setBounds(0, 0, 800, 480);
+
+            // --- QUIT BUTTON (Top Right) ---
+            JButton quitBtn = new JButton("<html><div style='text-shadow: 1px 1px 2px #000000;'>✕ Quit</div></html>");
+            quitBtn.setFont(new Font("Segoe UI", Font.BOLD, 14));
+            quitBtn.setForeground(Color.WHITE);
+            quitBtn.setContentAreaFilled(false); // Transparent background
+            quitBtn.setBorderPainted(false);
+            quitBtn.setFocusPainted(false);
+            quitBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+            // Position it in the top right corner
+            quitBtn.setBounds(700, 10, 80, 30);
+
+            quitBtn.addActionListener(e -> {
+                int confirm = JOptionPane.showConfirmDialog(this,
+                        "Are you sure you want to exit PaLO?", "Quit Application",
+                        JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE);
+                if (confirm == JOptionPane.YES_OPTION) {
+                    System.exit(0);
+                }
+            });
 
             GridBagConstraints gbc = new GridBagConstraints();
-            gbc.insets = new java.awt.Insets(30, 50, 30, 50); // Margin from edges
+            gbc.insets = new java.awt.Insets(40, 60, 40, 60);
 
-            // --- PaLO (Top Left) ---
-            JLabel titleLabel = new JLabel("PaLO");
-            titleLabel.setFont(new Font("Serif", Font.PLAIN, 100));
+            // 1. PaLO Title
+            JLabel titleLabel = new JLabel("<html><div style='text-shadow: 3px 3px 6px #000000;'>PaLO</div></html>");
+            titleLabel.setFont(new Font("Serif", Font.PLAIN, 110));
             titleLabel.setForeground(Color.WHITE);
-            gbc.gridx = 0; gbc.gridy = 0;
-            gbc.weightx = 1.0; gbc.weighty = 0.5;
+            gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 1.0; gbc.weighty = 0.5;
             gbc.anchor = GridBagConstraints.NORTHWEST;
             contentPane.add(titleLabel, gbc);
 
-            // --- Full Name (Bottom Left) ---
-            JLabel fullNameLabel = new JLabel("<html>Progressive and<br>Audio assisted<br>Learning<br>Orchestrator</html>");
+            // 2. Full Name
+            String fullNameHtml = "<html><div style='text-shadow: 2px 2px 4px #000000;'>" +
+                    "Progressive and<br>Audio assisted<br>Learning<br>Orchestrator</div></html>";
+            JLabel fullNameLabel = new JLabel(fullNameHtml);
             fullNameLabel.setFont(new Font("Serif", Font.PLAIN, 28));
             fullNameLabel.setForeground(Color.WHITE);
             gbc.gridx = 0; gbc.gridy = 1;
@@ -173,23 +191,28 @@ public class OfflineTutorApp extends JFrame {
             gbc.anchor = GridBagConstraints.SOUTHWEST;
             contentPane.add(fullNameLabel, gbc);
 
-            // --- Initializing... (Bottom Right) ---
-            JLabel initLabel = new JLabel("Initializing PAL");
+            // 3. Initializing Text
+            JLabel initLabel = new JLabel("<html><div style='text-shadow: 1px 1px 3px #000000;'>" +
+                    "Initializing Mathematical Engines...</div></html>");
             initLabel.setFont(new Font("Segoe UI", Font.ITALIC, 14));
-            initLabel.setForeground(new Color(220, 220, 220));
+            initLabel.setForeground(new Color(230, 230, 230));
             gbc.gridx = 1; gbc.gridy = 1;
             gbc.weightx = 0; gbc.weighty = 0.5;
             gbc.anchor = GridBagConstraints.SOUTHEAST;
             contentPane.add(initLabel, gbc);
 
-            // Progress Bar (Bottom)
+            // Add components to LayeredPane
+            layeredPane.add(contentPane, JLayeredPane.DEFAULT_LAYER);
+            layeredPane.add(quitBtn, JLayeredPane.PALETTE_LAYER);
+
+            // Progress Bar
             JProgressBar loading = new JProgressBar();
             loading.setIndeterminate(true);
-            loading.setPreferredSize(new Dimension(800, 6));
-            loading.setForeground(new Color(46, 204, 113)); // Green loading bar
+            loading.setPreferredSize(new Dimension(800, 4));
+            loading.setForeground(new Color(46, 204, 113));
             loading.setBorder(null);
 
-            add(contentPane, BorderLayout.CENTER);
+            add(layeredPane, BorderLayout.CENTER);
             add(loading, BorderLayout.SOUTH);
         }
     }
@@ -227,7 +250,18 @@ public class OfflineTutorApp extends JFrame {
     private void setupUI() {
         setTitle("Progressive and Audio assisted Learning Orchestrator (" + selectedSubject + " Mode)");
         setSize(1400, 800);
-        setDefaultCloseOperation(EXIT_ON_CLOSE);
+
+        // IMPORTANT: Change this to DO_NOTHING so we can handle it manually
+        setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
+
+        // Add the WindowListener to catch the "X" click
+        addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosing(java.awt.event.WindowEvent e) {
+                handleExitRequest();
+            }
+        });
+
         setLayout(new BorderLayout(10, 10));
 
         // --- 1. TOP PANEL ---
@@ -313,17 +347,7 @@ public class OfflineTutorApp extends JFrame {
         btnScan.setFont(new Font("Segoe UI", Font.BOLD, 14));
         btnScan.addActionListener(e -> performScan());
 
-        JButton btnExit = new JButton("💾 Save & Exit");
-        btnExit.setFont(new Font("Segoe UI", Font.BOLD, 14));
-        btnExit.setBackground(new Color(231, 76, 60));
-        btnExit.setForeground(Color.WHITE);
-        btnExit.addActionListener(e -> {
-            saveProgress();
-            System.exit(0);
-        });
-
         buttonPanel.add(btnScan);
-        buttonPanel.add(btnExit);
 
         // Combine settings and buttons into the container
         bottomContainer.add(settingsPanel, BorderLayout.NORTH);
@@ -376,11 +400,15 @@ public class OfflineTutorApp extends JFrame {
 
     // --- LOGIC: CHECK ANSWER ---
     private void checkAnswer(String selectedText) {
-        if (quizTimer != null) quizTimer.stop(); // STOP IMMEDIATELY
-
+        if (quizTimer != null) quizTimer.stop();
         if (currentQuestion == null) return;
 
-        float score;
+        // Save the user's choice into the question object
+        currentQuestion.userProvidedAnswer = selectedText;
+        sessionLog.add(currentQuestion); // Add to our permanent session log
+
+        float score = selectedText.equals(currentQuestion.correctAnswer) ? 1.0f : 0.0f;
+
         if (selectedText.equals(currentQuestion.correctAnswer)) {
             score = 1.0f;
             JOptionPane.showMessageDialog(this, "Correct! ✅");
@@ -397,6 +425,49 @@ public class OfflineTutorApp extends JFrame {
 
         boolean nextIsEasy = (score == 0.0f);
         loadNextQuestion(nextIsEasy);
+    }
+
+    private void showPerformanceReport() {
+        if (sessionLog.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No questions answered yet.");
+            return;
+        }
+
+        // Calculate Accuracy
+        long correctCount = sessionLog.stream()
+                .filter(q -> q.userProvidedAnswer.equals(q.correctAnswer)).count();
+        double accuracy = (double) correctCount / sessionLog.size() * 100;
+
+        // Setup Table Model
+        String[] columns = {"Status", "Question", "Your Answer", "Correct Answer", "Textbook Reference"};
+        DefaultTableModel model = new DefaultTableModel(columns, 0);
+
+        for (QuizItem q : sessionLog) {
+            boolean isCorrect = q.userProvidedAnswer.equals(q.correctAnswer);
+            model.addRow(new Object[]{
+                    isCorrect ? "✅" : "❌",
+                    q.questionText.length() > 50 ? q.questionText.substring(0, 50) + "..." : q.questionText,
+                    q.userProvidedAnswer,
+                    q.correctAnswer,
+                    q.originalContext // The "Reference Lines"
+            });
+        }
+
+        JTable table = new JTable(model);
+        table.getColumnModel().getColumn(0).setPreferredWidth(50);
+        table.getColumnModel().getColumn(4).setPreferredWidth(200); // Give space for reference lines
+
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        JLabel summaryLabel = new JLabel(String.format(
+                "<html><body style='padding:10px;'><h2>Session Summary</h2>" +
+                        "<b>Total:</b> %d | <b>Correct:</b> %d | <b>Accuracy:</b> %.1f%%</body></html>",
+                sessionLog.size(), correctCount, accuracy));
+
+        panel.add(summaryLabel, BorderLayout.NORTH);
+        panel.add(new JScrollPane(table), BorderLayout.CENTER);
+        panel.setPreferredSize(new Dimension(900, 500));
+
+        JOptionPane.showMessageDialog(this, panel, "Final Performance Review", JOptionPane.PLAIN_MESSAGE);
     }
 
     private void removeQuestionFromPools(QuizItem q) {
@@ -425,6 +496,17 @@ public class OfflineTutorApp extends JFrame {
         } else {
             aiStatusLabel.setForeground(new Color(39, 174, 96));
             aiStatusLabel.setText("AI: DETECTED MASTERY -> Switching to Harder Questions");
+        }
+    }
+
+    private void handleExitRequest() {
+        int response = JOptionPane.showConfirmDialog(
+                this, "Quit Now?", "Exit Confirmation", JOptionPane.YES_NO_OPTION);
+
+        if (response == JOptionPane.YES_OPTION) {
+            showPerformanceReport(); // Show marks and wrong answers first
+            saveProgress();
+            System.exit(0);
         }
     }
 
@@ -534,6 +616,45 @@ public class OfflineTutorApp extends JFrame {
                 }
             }).start();
         }
+    }
+
+    private void showSessionSummary() {
+        int totalQuestions = studentHistory.size();
+        if (totalQuestions == 0) {
+            JOptionPane.showMessageDialog(this, "No questions answered this session.");
+            return;
+        }
+
+        long correctCount = studentHistory.stream().filter(s -> s == 1.0f).count();
+        double accuracy = (double) correctCount / totalQuestions * 100;
+
+        // Create a Panel for the Report
+        JPanel reportPanel = new JPanel(new BorderLayout(10, 10));
+        reportPanel.setPreferredSize(new Dimension(600, 400));
+
+        // Header: Score and Accuracy
+        JLabel scoreLabel = new JLabel(String.format(
+                "<html><div style='text-align: center;'><h2>Session Results</h2>" +
+                        "<b>Score:</b> %d / %d<br>" +
+                        "<b>Accuracy:</b> %.1f%%</div></html>",
+                correctCount, totalQuestions, accuracy), SwingConstants.CENTER);
+        reportPanel.add(scoreLabel, BorderLayout.NORTH);
+
+        // Body: Detailed Table of Errors
+        String[] columnNames = {"Question Snapshot", "Your Answer", "Correct Answer"};
+        java.util.List<QuizItem> allQuestions = new ArrayList<>();
+        allQuestions.addAll(easyQuestions); // This needs to be tracked in a 'master list' instead
+        // Note: Since you remove items from pools, you should keep a 'sessionHistory' list of QuizItems
+
+        // For this example, let's assume you've added answered items to a list called 'sessionLog'
+        DefaultTableModel model = new DefaultTableModel(columnNames, 0);
+        // Loop through your logged questions and add rows where user was wrong
+
+        JTable table = new JTable(model);
+        table.setFillsViewportHeight(true);
+        reportPanel.add(new JScrollPane(table), BorderLayout.CENTER);
+
+        JOptionPane.showMessageDialog(this, reportPanel, "Performance Report", JOptionPane.PLAIN_MESSAGE);
     }
 
     private String processPDF(File pdfFile) throws Exception {
