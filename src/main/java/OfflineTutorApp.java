@@ -121,60 +121,106 @@ public class OfflineTutorApp extends JFrame {
 
     private class SplashScreen extends JDialog {
         public SplashScreen() {
-            setUndecorated(true); // Pro look: no title bar
-            setSize(600, 350);
+            setUndecorated(true);
+            setSize(800, 450);
             setLocationRelativeTo(null);
-            setLayout(new BorderLayout());
 
-            // Background Panel
-            JPanel content = new JPanel(new BorderLayout());
-            content.setBackground(new Color(30, 30, 30));
-            content.setBorder(BorderFactory.createLineBorder(new Color(60, 60, 60), 2));
+            // Load the GIF
+            ImageIcon backgroundGif = new ImageIcon("background.gif");
 
-            // Center: Title and Subtitle
-            JLabel title = new JLabel("PALO", SwingConstants.CENTER);
-            title.setFont(new Font("Monospaced", Font.BOLD, 32));
-            title.setForeground(Color.WHITE);
+            JPanel contentPane = new JPanel(new GridBagLayout()) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    super.paintComponent(g);
+                    // 1. Draw the GIF as the background
+                    if (backgroundGif != null) {
+                        g.drawImage(backgroundGif.getImage(), 0, 0, getWidth(), getHeight(), this);
+                    } else {
+                        // Fallback color if GIF is missing
+                        g.setColor(new Color(169, 169, 169));
+                        g.fillRect(0, 0, getWidth(), getHeight());
+                    }
 
-            JLabel subtitle = new JLabel("Opening application", SwingConstants.CENTER);
-            subtitle.setFont(new Font("Segoe UI", Font.ITALIC, 14));
-            subtitle.setForeground(Color.GRAY);
+                    // 2. Draw the Wavy Graphic Overlay (Optional - if your GIF doesn't have it)
+                    Graphics2D g2d = (Graphics2D) g;
+                    g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2d.setColor(new Color(255, 255, 255, 40)); // Faint white
+                    g2d.setStroke(new BasicStroke(40, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                    // Simple squiggle on the right
+                    g2d.drawArc(getWidth()-200, 50, 150, 150, 0, 180);
+                    g2d.drawArc(getWidth()-250, 180, 150, 150, 180, 180);
+                }
+            };
 
-            JPanel centerPanel = new JPanel(new GridLayout(2, 1));
-            centerPanel.setOpaque(false);
-            centerPanel.add(title);
-            centerPanel.add(subtitle);
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.insets = new java.awt.Insets(30, 50, 30, 50); // Margin from edges
 
-            // Bottom: Simple Loading Bar (Decorative)
+            // --- PaLO (Top Left) ---
+            JLabel titleLabel = new JLabel("PaLO");
+            titleLabel.setFont(new Font("Serif", Font.PLAIN, 100));
+            titleLabel.setForeground(Color.WHITE);
+            gbc.gridx = 0; gbc.gridy = 0;
+            gbc.weightx = 1.0; gbc.weighty = 0.5;
+            gbc.anchor = GridBagConstraints.NORTHWEST;
+            contentPane.add(titleLabel, gbc);
+
+            // --- Full Name (Bottom Left) ---
+            JLabel fullNameLabel = new JLabel("<html>Progressive and<br>Audio assisted<br>Learning<br>Orchestrator</html>");
+            fullNameLabel.setFont(new Font("Serif", Font.PLAIN, 28));
+            fullNameLabel.setForeground(Color.WHITE);
+            gbc.gridx = 0; gbc.gridy = 1;
+            gbc.weightx = 1.0; gbc.weighty = 0.5;
+            gbc.anchor = GridBagConstraints.SOUTHWEST;
+            contentPane.add(fullNameLabel, gbc);
+
+            // --- Initializing... (Bottom Right) ---
+            JLabel initLabel = new JLabel("Initializing PAL");
+            initLabel.setFont(new Font("Segoe UI", Font.ITALIC, 14));
+            initLabel.setForeground(new Color(220, 220, 220));
+            gbc.gridx = 1; gbc.gridy = 1;
+            gbc.weightx = 0; gbc.weighty = 0.5;
+            gbc.anchor = GridBagConstraints.SOUTHEAST;
+            contentPane.add(initLabel, gbc);
+
+            // Progress Bar (Bottom)
             JProgressBar loading = new JProgressBar();
             loading.setIndeterminate(true);
-            loading.setPreferredSize(new Dimension(600, 5));
-            loading.setForeground(new Color(46, 204, 113));
+            loading.setPreferredSize(new Dimension(800, 6));
+            loading.setForeground(new Color(46, 204, 113)); // Green loading bar
             loading.setBorder(null);
 
-            content.add(centerPanel, BorderLayout.CENTER);
-            content.add(loading, BorderLayout.SOUTH);
-            add(content);
+            add(contentPane, BorderLayout.CENTER);
+            add(loading, BorderLayout.SOUTH);
         }
     }
 
     public OfflineTutorApp() {
-        // Show splash screen, then setup UI
         SplashScreen splash = new SplashScreen();
+        splash.setVisible(true);
+
         new Thread(() -> {
             try {
-                splash.setVisible(true);
-                Thread.sleep(2000);
-                splash.dispose();
+                Thread.sleep(3000);
+                initAI();
+                loadProgress();
 
                 SwingUtilities.invokeLater(() -> {
-                    // askForSubject();  <-- REMOVE THIS
                     setupUI();
-                    initAI();
-                    loadProgress();
+
+                    // 1. Force the specific resolution
+                    setSize(1400, 800);
+
+                    // 2. Center the window on the screen
+                    // IMPORTANT: This must come AFTER setSize()
+                    setLocationRelativeTo(null);
+
                     setVisible(true);
+                    splash.dispose();
                 });
-            } catch (Exception e) {}
+            } catch (Exception e) {
+                e.printStackTrace();
+                splash.dispose();
+            }
         }).start();
     }
 
