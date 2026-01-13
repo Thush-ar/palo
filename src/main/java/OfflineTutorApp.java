@@ -35,7 +35,6 @@ import java.util.Scanner;
 import java.util.Set;
 import java.util.Arrays;
 
-
 public class OfflineTutorApp extends JFrame {
 
 
@@ -67,6 +66,91 @@ public class OfflineTutorApp extends JFrame {
     private int secondsRemaining;
     private int userSelectedTime = 0; // 0 means no timer
     private JLabel timerLabel;
+
+    private class ModeSelectionScreen extends JDialog {
+        public ModeSelectionScreen(Frame owner) {
+            super(owner, "PaLO - Select Orchestration Mode", true);
+            setUndecorated(true);
+            setSize(850, 450);
+            setLocationRelativeTo(owner);
+
+            // Main Background Panel with a subtle gradient-like dark color
+            JPanel mainPanel = new JPanel(new BorderLayout());
+            mainPanel.setBackground(new Color(18, 18, 18));
+            mainPanel.setBorder(BorderFactory.createLineBorder(new Color(45, 45, 45), 2));
+
+            // Header Label
+            JLabel header = new JLabel("Select Mode", SwingConstants.CENTER);
+            header.setFont(new Font("Monospace", Font.BOLD, 22));
+            header.setForeground(Color.WHITE);
+            header.setBorder(BorderFactory.createEmptyBorder(30, 0, 10, 0));
+            mainPanel.add(header, BorderLayout.NORTH);
+
+            // Container for the 3 Cards
+            JPanel cardContainer = new JPanel(new GridLayout(1, 3, 25, 0));
+            cardContainer.setBackground(new Color(18, 18, 18));
+            cardContainer.setBorder(BorderFactory.createEmptyBorder(30, 40, 50, 40));
+
+            // Create the three options with specific accent colors
+            JButton btnScan = createModernCard("Scan Pages", "📄", "Analyze textbook pages in a jiffy!", new Color(46, 204, 113));
+            JButton btnAudio = createModernCard("Audio Assisted", "🔊", "Interactive voice mode for the differently abled", new Color(52, 152, 219));
+            JButton btnOnline = createModernCard("Online Mode", "🌐", "For more extensive learning", new Color(149, 165, 166));
+
+            btnOnline.setEnabled(false); // Locked as requested
+
+            btnScan.addActionListener(e -> { isAudioMode = false; dispose(); });
+            btnAudio.addActionListener(e -> { isAudioMode = true; dispose(); });
+
+            cardContainer.add(btnScan);
+            cardContainer.add(btnAudio);
+            cardContainer.add(btnOnline);
+
+            mainPanel.add(cardContainer, BorderLayout.CENTER);
+            add(mainPanel);
+        }
+
+        private JButton createModernCard(String title, String icon, String subtitle, Color accentColor) {
+            String content = "<html><center>" +
+                    "<font size='7' color='" + toHex(accentColor) + "'>" + icon + "</font><br><br>" +
+                    "<font size='5' color='white'><b>" + title + "</b></font><br>" +
+                    "<font size='3' color='#888888'>" + subtitle + "</font>" +
+                    "</center></html>";
+
+            JButton b = new JButton(content);
+            b.setFocusPainted(false);
+            b.setContentAreaFilled(false); // We will draw our own background
+            b.setOpaque(false);
+            b.setForeground(Color.WHITE);
+            b.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+            // Custom Card Border and Background
+            b.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(new Color(40, 40, 40), 1, true),
+                    BorderFactory.createEmptyBorder(20, 10, 20, 10)
+            ));
+
+            // Hover and Animation Effects
+            b.addMouseListener(new java.awt.event.MouseAdapter() {
+                public void mouseEntered(java.awt.event.MouseEvent e) {
+                    if (b.isEnabled()) {
+                        b.setBackground(new Color(35, 35, 35));
+                        b.setBorder(BorderFactory.createLineBorder(accentColor, 1, true));
+                        b.setOpaque(true);
+                    }
+                }
+                public void mouseExited(java.awt.event.MouseEvent e) {
+                    b.setOpaque(false);
+                    b.setBorder(BorderFactory.createLineBorder(new Color(40, 40, 40), 1, true));
+                }
+            });
+
+            return b;
+        }
+
+        private String toHex(Color color) {
+            return String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
+        }
+    }
 
     private static class QuizItem {
         String id;
@@ -217,33 +301,34 @@ public class OfflineTutorApp extends JFrame {
         }
     }
 
+    // Add this field at the top of your class
+    private boolean isAudioMode = false;
+
     public OfflineTutorApp() {
         SplashScreen splash = new SplashScreen();
         splash.setVisible(true);
 
         new Thread(() -> {
             try {
-                Thread.sleep(3000);
+                // 1. Initialize logic/AI while splash is visible
                 initAI();
                 loadProgress();
+                Thread.sleep(3000); // Allow splash to be seen
 
                 SwingUtilities.invokeLater(() -> {
-                    setupUI();
-
-                    // 1. Force the specific resolution
-                    setSize(1400, 800);
-
-                    // 2. Center the window on the screen
-                    // IMPORTANT: This must come AFTER setSize()
-                    setLocationRelativeTo(null);
-
-                    setVisible(true);
                     splash.dispose();
+
+                    // 2. Show the New Header/Mode Selection Window
+                    ModeSelectionScreen selector = new ModeSelectionScreen(this);
+                    selector.setVisible(true); // Execution pauses here until a mode is picked
+
+                    // 3. Build Main UI based on selection
+                    setupUI();
+                    setSize(1400, 800);
+                    setLocationRelativeTo(null);
+                    setVisible(true);
                 });
-            } catch (Exception e) {
-                e.printStackTrace();
-                splash.dispose();
-            }
+            } catch (Exception e) { e.printStackTrace(); }
         }).start();
     }
 
