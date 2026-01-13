@@ -1,4 +1,5 @@
 import ai.djl.Model;
+import java.util.regex.Pattern;
 import ai.djl.inference.Predictor;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
@@ -31,10 +32,13 @@ import java.util.Scanner;
 import java.util.Set;
 import java.util.Arrays;
 
+
 public class OfflineTutorApp extends JFrame {
 
 
     // --- GUI Components ---
+    private JComboBox<String> subjectDropdown;
+    private JComboBox<String> timerDropdown;
     private JTextArea questionArea;
     private JLabel aiStatusLabel;
     private JLabel difficultyLabel;
@@ -49,7 +53,33 @@ public class OfflineTutorApp extends JFrame {
     private List<QuizItem> hardQuestions = new ArrayList<>();
     private Set<String> askedQuestionIDs = new HashSet<>();
     private QuizItem currentQuestion;
-    
+
+    // --- Logic & Data ---
+    private int questionCounter = 0; // New variable to track question number
+
+    // --- Timer Components ---
+    private javax.swing.Timer quizTimer;
+    private int secondsRemaining;
+    private int userSelectedTime = 0; // 0 means no timer
+    private JLabel timerLabel;
+
+    private static class QuizItem {
+        String id;
+        String questionText;
+        String displaySentence; // Store the original, unedited sentence here
+        String correctAnswer;
+        List<String> options;
+        String originalContext;
+
+        public QuizItem(String q, String display, String a, List<String> opts, String context) {
+            this.id = q.hashCode() + "" + a.hashCode();
+            this.questionText = q;
+            this.displaySentence = display;
+            this.correctAnswer = a;
+            this.options = opts;
+            this.originalContext = context;
+        }
+    }
 
     // --- SUBJECT SPECIFIC STOP WORDS ---
     private List<String> currentBannedTopics = new ArrayList<>();
@@ -87,78 +117,105 @@ public class OfflineTutorApp extends JFrame {
         ));
     }
 
-    private static class QuizItem {
-        String id;
-        String questionText;
-        String correctAnswer;
-        List<String> options;
-        String originalContext;
 
-        public QuizItem(String q, String a, List<String> opts, String context) {
-            this.id = q.hashCode() + "" + a.hashCode();
-            this.questionText = q;
-            this.correctAnswer = a;
-            this.options = opts;
-            this.originalContext = context;
+
+    private class SplashScreen extends JDialog {
+        public SplashScreen() {
+            setUndecorated(true); // Pro look: no title bar
+            setSize(600, 350);
+            setLocationRelativeTo(null);
+            setLayout(new BorderLayout());
+
+            // Background Panel
+            JPanel content = new JPanel(new BorderLayout());
+            content.setBackground(new Color(30, 30, 30));
+            content.setBorder(BorderFactory.createLineBorder(new Color(60, 60, 60), 2));
+
+            // Center: Title and Subtitle
+            JLabel title = new JLabel("PALO", SwingConstants.CENTER);
+            title.setFont(new Font("Monospaced", Font.BOLD, 32));
+            title.setForeground(Color.WHITE);
+
+            JLabel subtitle = new JLabel("Opening application", SwingConstants.CENTER);
+            subtitle.setFont(new Font("Segoe UI", Font.ITALIC, 14));
+            subtitle.setForeground(Color.GRAY);
+
+            JPanel centerPanel = new JPanel(new GridLayout(2, 1));
+            centerPanel.setOpaque(false);
+            centerPanel.add(title);
+            centerPanel.add(subtitle);
+
+            // Bottom: Simple Loading Bar (Decorative)
+            JProgressBar loading = new JProgressBar();
+            loading.setIndeterminate(true);
+            loading.setPreferredSize(new Dimension(600, 5));
+            loading.setForeground(new Color(46, 204, 113));
+            loading.setBorder(null);
+
+            content.add(centerPanel, BorderLayout.CENTER);
+            content.add(loading, BorderLayout.SOUTH);
+            add(content);
         }
     }
 
     public OfflineTutorApp() {
-        askForSubject();
-        setupUI();
-        initAI();
-        loadProgress();
-    }
+        // Show splash screen, then setup UI
+        SplashScreen splash = new SplashScreen();
+        new Thread(() -> {
+            try {
+                splash.setVisible(true);
+                Thread.sleep(2000);
+                splash.dispose();
 
-    private void askForSubject() {
-        String[] subjects = {"Physics", "Computer Science", "Biology", "General"};
-        String choice = (String) JOptionPane.showInputDialog(
-                null,
-                "Select the Subject you are scanning:",
-                "Subject Selection",
-                JOptionPane.QUESTION_MESSAGE,
-                null,
-                subjects,
-                subjects[0]);
-
-        if (choice != null) {
-            selectedSubject = choice;
-            currentBannedTopics = SUBJECT_BAN_LISTS.get(choice);
-        } else {
-            System.exit(0);
-        }
+                SwingUtilities.invokeLater(() -> {
+                    // askForSubject();  <-- REMOVE THIS
+                    setupUI();
+                    initAI();
+                    loadProgress();
+                    setVisible(true);
+                });
+            } catch (Exception e) {}
+        }).start();
     }
 
     private void setupUI() {
-        setTitle("Offline Adaptive Tutor (" + selectedSubject + " Mode)");
+        setTitle("Progressive and Audio assisted Learning Orchestrator (" + selectedSubject + " Mode)");
         setSize(1400, 800);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setLayout(new BorderLayout(10, 10));
 
-        // 1. TOP PANEL
-        JPanel topPanel = new JPanel(new GridLayout(3, 1));
+        // --- 1. TOP PANEL ---
+        // Changed GridLayout to 4 rows to accommodate the Timer Label
+        JPanel topPanel = new JPanel(new GridLayout(4, 1));
+
+        timerLabel = new JLabel("Timer: Off", SwingConstants.CENTER);
+        timerLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
+
         aiStatusLabel = new JLabel("Status: Waiting for Scan...", SwingConstants.CENTER);
         aiStatusLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+
         difficultyLabel = new JLabel("Difficulty Level: N/A", SwingConstants.CENTER);
         difficultyLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
         difficultyLabel.setForeground(Color.GRAY);
+
         masteryBar = new JProgressBar(0, 100);
         masteryBar.setStringPainted(true);
         masteryBar.setString("Predicted Mastery: 0%");
         masteryBar.setForeground(new Color(46, 204, 113));
 
+        topPanel.add(timerLabel);
         topPanel.add(aiStatusLabel);
         topPanel.add(difficultyLabel);
         topPanel.add(masteryBar);
         add(topPanel, BorderLayout.NORTH);
 
-        // 2. CENTER SPLIT PANE
+        // --- 2. CENTER SPLIT PANE ---
         JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
         splitPane.setResizeWeight(0.5);
 
-        // LEFT: Quiz Area
+        // Left: Quiz Area
         JPanel quizPanel = new JPanel(new BorderLayout(10, 10));
-        questionArea = new JTextArea("\n   [Instructions]\n   1. Click 'Scan Textbook Page'.\n   2. The AI will filter noise based on '" + selectedSubject + "'.\n   3. Context-aware questions will be generated.");
+        questionArea = new JTextArea("\n   [Instructions]\n   1. Select Subject and Timer below.\n   2. Click 'Scan Textbook Page'.\n   3. Answer questions to improve Mastery.");
         questionArea.setFont(new Font("Serif", Font.PLAIN, 22));
         questionArea.setLineWrap(true);
         questionArea.setWrapStyleWord(true);
@@ -176,7 +233,7 @@ public class OfflineTutorApp extends JFrame {
         quizPanel.add(new JScrollPane(questionArea), BorderLayout.CENTER);
         quizPanel.add(optionsPanel, BorderLayout.SOUTH);
 
-        // RIGHT: Image Viewer
+        // Right: Image Viewer
         imageViewer = new JLabel("No Image Scanned", SwingConstants.CENTER);
         imageViewer.setFont(new Font("Segoe UI", Font.ITALIC, 18));
         imageViewer.setOpaque(true);
@@ -187,8 +244,25 @@ public class OfflineTutorApp extends JFrame {
         splitPane.setRightComponent(imageScroll);
         add(splitPane, BorderLayout.CENTER);
 
-        // 3. BOTTOM PANEL
-        JPanel controlPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 30, 15));
+        // --- 3. INTEGRATED BOTTOM PANEL ---
+        JPanel bottomContainer = new JPanel(new BorderLayout());
+
+        // Settings Bar
+        JPanel settingsPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 20, 5));
+        settingsPanel.setBorder(BorderFactory.createTitledBorder("Session Settings"));
+
+        subjectDropdown = new JComboBox<>(new String[]{"Physics", "Computer Science", "Biology", "General"});
+        subjectDropdown.setSelectedItem(selectedSubject);
+
+        timerDropdown = new JComboBox<>(new String[]{"No Timer", "15 Seconds", "30 Seconds", "60 Seconds"});
+
+        settingsPanel.add(new JLabel("Subject:"));
+        settingsPanel.add(subjectDropdown);
+        settingsPanel.add(new JLabel("Timer:"));
+        settingsPanel.add(timerDropdown);
+
+        // Main Control Buttons
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 30, 15));
         JButton btnScan = new JButton("📷 Scan Textbook Page");
         btnScan.setFont(new Font("Segoe UI", Font.BOLD, 14));
         btnScan.addActionListener(e -> performScan());
@@ -202,9 +276,48 @@ public class OfflineTutorApp extends JFrame {
             System.exit(0);
         });
 
-        controlPanel.add(btnScan);
-        controlPanel.add(btnExit);
-        add(controlPanel, BorderLayout.SOUTH);
+        buttonPanel.add(btnScan);
+        buttonPanel.add(btnExit);
+
+        // Combine settings and buttons into the container
+        bottomContainer.add(settingsPanel, BorderLayout.NORTH);
+        bottomContainer.add(buttonPanel, BorderLayout.SOUTH);
+
+        // Add the single container to the SOUTH position
+        add(bottomContainer, BorderLayout.SOUTH);
+    }
+
+    private void startNewTimer() {
+        if (userSelectedTime <= 0) return;
+
+        if (quizTimer != null && quizTimer.isRunning()) {
+            quizTimer.stop();
+        }
+
+        secondsRemaining = userSelectedTime;
+        timerLabel.setText("Time Left: " + secondsRemaining + "s");
+        timerLabel.setForeground(Color.BLACK); // Reset color
+
+        quizTimer = new javax.swing.Timer(1000, e -> {
+            secondsRemaining--;
+
+            if (secondsRemaining <= 5) {
+                timerLabel.setForeground(Color.RED); // Warning color
+            }
+
+            timerLabel.setText("Time Left: " + secondsRemaining + "s");
+
+            if (secondsRemaining <= 0) {
+                quizTimer.stop();
+                handleTimeout();
+            }
+        });
+        quizTimer.start();
+    }
+
+    private void handleTimeout() {
+        JOptionPane.showMessageDialog(this, "Time's up!");
+        checkAnswer("TIMEOUT");
     }
 
     private JButton createOptionButton(String text) {
@@ -217,6 +330,8 @@ public class OfflineTutorApp extends JFrame {
 
     // --- LOGIC: CHECK ANSWER ---
     private void checkAnswer(String selectedText) {
+        if (quizTimer != null) quizTimer.stop(); // STOP IMMEDIATELY
+
         if (currentQuestion == null) return;
 
         float score;
@@ -276,13 +391,19 @@ public class OfflineTutorApp extends JFrame {
             return;
         }
 
+
+        // Increment the counter every time a new question is loaded
+        questionCounter++;
+
         currentQuestion = pool.get(0);
 
+        // Update the label to show both the Number and the Difficulty
+        String levelText = isEasy ? "EASY" : "HARD";
+        difficultyLabel.setText("Question #" + questionCounter + " | Current Level: " + levelText);
+
         if (isEasy) {
-            difficultyLabel.setText("Current Level: EASY");
             difficultyLabel.setForeground(new Color(230, 126, 34));
         } else {
-            difficultyLabel.setText("Current Level: HARD");
             difficultyLabel.setForeground(new Color(39, 174, 96));
         }
 
@@ -294,6 +415,11 @@ public class OfflineTutorApp extends JFrame {
             btnB.setText(currentQuestion.options.get(1));
             btnC.setText(currentQuestion.options.get(2));
             btnD.setText(currentQuestion.options.get(3));
+        }
+        if (userSelectedTime > 0) {
+            startNewTimer();
+        } else {
+            timerLabel.setText("Timer: Off");
         }
     }
 
@@ -307,13 +433,27 @@ public class OfflineTutorApp extends JFrame {
 
     // --- LOGIC: SCANNING ---
     private void performScan() {
+        // 1. Capture current settings from the UI
+        selectedSubject = (String) subjectDropdown.getSelectedItem();
+        currentBannedTopics = SUBJECT_BAN_LISTS.get(selectedSubject);
+
+        String timeChoice = (String) timerDropdown.getSelectedItem();
+        if (timeChoice != null && !timeChoice.equals("No Timer")) {
+            userSelectedTime = Integer.parseInt(timeChoice.split(" ")[0]);
+        } else {
+            userSelectedTime = 0;
+        }
+
+        // 2. Open File Chooser
         JFileChooser chooser = new JFileChooser();
-        // Update filter to accept both Images and PDFs
         chooser.setFileFilter(new FileNameExtensionFilter("Documents (PDF, JPG, PNG)", "pdf", "jpg", "png", "jpeg"));
 
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             File selectedFile = chooser.getSelectedFile();
             aiStatusLabel.setText("Processing... Please Wait.");
+
+            // Reset question counter for the new scan
+            questionCounter = 0;
 
             new Thread(() -> {
                 try {
@@ -321,10 +461,8 @@ public class OfflineTutorApp extends JFrame {
                     String fileName = selectedFile.getName().toLowerCase();
 
                     if (fileName.endsWith(".pdf")) {
-                        // Handle PDF (multi-page)
                         extractedText.append(processPDF(selectedFile));
                     } else {
-                        // Handle single image (existing logic)
                         displayImage(selectedFile);
                         File cleanFile = cleanImage(selectedFile);
                         Tesseract tesseract = new Tesseract();
@@ -332,14 +470,16 @@ public class OfflineTutorApp extends JFrame {
                         extractedText.append(tesseract.doOCR(cleanFile));
                     }
 
+                    // Generate the questions from extracted text
                     generateMCQ(extractedText.toString());
 
                     SwingUtilities.invokeLater(() -> {
                         if (easyQuestions.isEmpty() && hardQuestions.isEmpty()) {
-                            aiStatusLabel.setText("No valid topics found.");
+                            aiStatusLabel.setText("No valid topics found on this page.");
+                            JOptionPane.showMessageDialog(this, "The AI couldn't find enough clear text to generate questions. Please try a clearer scan.");
                         } else {
                             aiStatusLabel.setText("Scan Complete!");
-                            loadNextQuestion(true);
+                            loadNextQuestion(true); // Start the quiz
                         }
                     });
                 } catch (Exception ex) {
@@ -463,15 +603,20 @@ public class OfflineTutorApp extends JFrame {
 
             // --- STRATEGY B: "KEYWORD" DETECTION (Medium Value) ---
             // Only if Strategy A failed, fallback to standard Cloze Deletion
+            // --- STRATEGY B: CONCEPT IDENTIFICATION (Better Formatting) ---
             if (qText == null) {
                 for (String topic : validTopics) {
                     if (sentence.contains(topic)) {
                         answer = topic;
-                        qText = sentence.replaceFirst(topic, "__________");
 
-                        // Add Context if sentence is short/pronoun-heavy
+                        // Instead of hiding the word inside the sentence,
+                        // show the full sentence and ask what it refers to.
+                        qText = "Based on the text, what key concept is being discussed in this sentence?\n\n" +
+                                "\"" + sentence.trim() + "\"";
+
+                        // Add Context if the sentence starts with a pronoun
                         if (sentence.matches("^(This|It|These|That).*") && i > 0) {
-                            qText = "Context: \"" + sentences[i-1] + "\"\n\n" + qText;
+                            qText = "Context: " + sentences[i-1] + "\n\n" + qText;
                         }
                         break;
                     }
@@ -492,7 +637,8 @@ public class OfflineTutorApp extends JFrame {
                 while(options.size() < 4) options.add("None of the above");
                 Collections.shuffle(options);
 
-                QuizItem item = new QuizItem(qText, answer, options, sentence);
+                // This has 5 arguments: (qText, displaySentence, answer, options, originalContext)
+                QuizItem item = new QuizItem(qText, sentence, answer, options, sentence);
                 if (!askedQuestionIDs.contains(item.id)) {
                     if (qText.startsWith("What concept")) hardQuestions.add(item); // Definitions are harder
                     else easyQuestions.add(item);
@@ -549,6 +695,7 @@ public class OfflineTutorApp extends JFrame {
 
     public static void main(String[] args) {
         com.formdev.flatlaf.FlatDarkLaf.setup();
-        SwingUtilities.invokeLater(() -> new OfflineTutorApp().setVisible(true));
+        // Don't call setVisible(true) here, the constructor does it now
+        SwingUtilities.invokeLater(() -> new OfflineTutorApp());
     }
 }
