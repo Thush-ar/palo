@@ -152,6 +152,43 @@ public class OfflineTutorApp extends JFrame {
         }
     }
 
+    class CircleMasteryPanel extends JPanel {
+        private int progress = 0;
+
+        public void setProgress(int p) {
+            this.progress = p;
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g;
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            int size = Math.min(getWidth(), getHeight()) - 20;
+            int x = (getWidth() - size) / 2;
+            int y = (getHeight() - size) / 2;
+
+            // Background Track
+            g2.setStroke(new BasicStroke(12, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setColor(new Color(50, 50, 50));
+            g2.drawOval(x, y, size, size);
+
+            // Progress Arc
+            g2.setColor(new Color(46, 204, 113));
+            g2.drawArc(x, y, size, size, 90, -(int)(progress * 3.6));
+
+            // Center Text
+            String txt = progress + "%";
+            g2.setFont(new Font("Segoe UI", Font.BOLD, 24));
+            FontMetrics fm = g2.getFontMetrics();
+            int tx = (getWidth() - fm.stringWidth(txt)) / 2;
+            int ty = (getHeight() / 2) + (fm.getAscent() / 3);
+            g2.drawString(txt, tx, ty);
+        }
+    }
+
     private static class QuizItem {
         String id;
         String questionText;
@@ -332,135 +369,157 @@ public class OfflineTutorApp extends JFrame {
         }).start();
     }
 
+    private CircleMasteryPanel circleMastery;
+
+
     private void setupUI() {
-        setTitle("Progressive and Audio assisted Learning Orchestrator (" + selectedSubject + " Mode)");
-        setSize(1400, 800);
-
-        // IMPORTANT: Change this to DO_NOTHING so we can handle it manually
+        setTitle("PaLO - Adaptive Learning Orchestrator (" + selectedSubject + " Mode)");
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
-
-        // Add the WindowListener to catch the "X" click
-        addWindowListener(new java.awt.event.WindowAdapter() {
+        addWindowListener(new WindowAdapter() {
             @Override
-            public void windowClosing(java.awt.event.WindowEvent e) {
-                handleExitRequest();
-            }
+            public void windowClosing(WindowEvent e) { handleExitRequest(); }
         });
 
-        setLayout(new BorderLayout(10, 10));
+        setLayout(new BorderLayout(20, 0));
+        getContentPane().setBackground(new Color(28, 28, 28));
 
-        // --- 1. TOP PANEL ---
-        // Changed GridLayout to 4 rows to accommodate the Timer Label
-        JPanel topPanel = new JPanel(new GridLayout(4, 1));
+        // --- INITIALIZE COMPONENTS ---
+        aiStatusLabel = new JLabel("Ready", SwingConstants.CENTER);
+        aiStatusLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-        timerLabel = new JLabel("Timer: Off", SwingConstants.CENTER);
-        timerLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        difficultyLabel = new JLabel("Question #1 | Current Level: EASY", SwingConstants.CENTER);
+        difficultyLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+        difficultyLabel.setForeground(new Color(230, 126, 34));
 
-        aiStatusLabel = new JLabel("Status: Waiting for Scan...", SwingConstants.CENTER);
-        aiStatusLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+        timerLabel = new JLabel("00s", SwingConstants.CENTER);
+        timerLabel.setFont(new Font("Monospaced", Font.BOLD, 42));
+        timerLabel.setForeground(new Color(231, 76, 60));
+        timerLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        timerLabel.setPreferredSize(new Dimension(250, 60));
+        timerLabel.setMaximumSize(new Dimension(250, 60));
 
-        difficultyLabel = new JLabel("Difficulty Level: N/A", SwingConstants.CENTER);
-        difficultyLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
-        difficultyLabel.setForeground(Color.GRAY);
+        circleMastery = new CircleMasteryPanel();
+        circleMastery.setBackground(new Color(35, 35, 35));
+        circleMastery.setAlignmentX(Component.CENTER_ALIGNMENT);
+        circleMastery.setPreferredSize(new Dimension(180, 180));
+        circleMastery.setMaximumSize(new Dimension(180, 180));
 
-        masteryBar = new JProgressBar(0, 100);
-        masteryBar.setStringPainted(true);
-        masteryBar.setString("Predicted Mastery: 0%");
-        masteryBar.setForeground(new Color(46, 204, 113));
+        // --- SIDEBAR (LEFT) ---
+        JPanel sidebar = new JPanel();
+        sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
+        sidebar.setPreferredSize(new Dimension(280, 800));
+        sidebar.setBackground(new Color(35, 35, 35));
+        sidebar.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 10));
 
-        topPanel.add(timerLabel);
-        topPanel.add(aiStatusLabel);
-        topPanel.add(difficultyLabel);
-        topPanel.add(masteryBar);
-        add(topPanel, BorderLayout.NORTH);
-
-        // --- 2. CENTER SPLIT PANE ---
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
-        splitPane.setResizeWeight(0.5);
-
-        // Left: Quiz Area
-        JPanel quizPanel = new JPanel(new BorderLayout(10, 10));
-        questionArea = new JTextArea("\n   [Instructions]\n   1. Select Subject and Timer below.\n   2. Click 'Scan Textbook Page'.\n   3. Answer questions to improve Mastery.");
-        questionArea.setFont(new Font("Serif", Font.PLAIN, 22));
-        questionArea.setLineWrap(true);
-        questionArea.setWrapStyleWord(true);
-        questionArea.setEditable(false);
-        questionArea.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
-
-        JPanel optionsPanel = new JPanel(new GridLayout(2, 2, 10, 10));
-        btnA = createOptionButton("Option A");
-        btnB = createOptionButton("Option B");
-        btnC = createOptionButton("Option C");
-        btnD = createOptionButton("Option D");
-        optionsPanel.add(btnA); optionsPanel.add(btnB);
-        optionsPanel.add(btnC); optionsPanel.add(btnD);
-
-        quizPanel.add(new JScrollPane(questionArea), BorderLayout.CENTER);
-        quizPanel.add(optionsPanel, BorderLayout.SOUTH);
-
-        // Right: Image Viewer
-        imageViewer = new JLabel("No Image Scanned", SwingConstants.CENTER);
-        imageViewer.setFont(new Font("Segoe UI", Font.ITALIC, 18));
-        imageViewer.setOpaque(true);
-        imageViewer.setBackground(Color.LIGHT_GRAY);
-        JScrollPane imageScroll = new JScrollPane(imageViewer);
-
-        splitPane.setLeftComponent(quizPanel);
-        splitPane.setRightComponent(imageScroll);
-        add(splitPane, BorderLayout.CENTER);
-
-        // --- 3. INTEGRATED BOTTOM PANEL ---
-        JPanel bottomContainer = new JPanel(new BorderLayout());
-
-        // Settings Bar
-        JPanel settingsPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 20, 5));
-        settingsPanel.setBorder(BorderFactory.createTitledBorder("Session Settings"));
+        addSidebarSection(sidebar, "OVERALL MASTERY", circleMastery);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 40)));
+        addSidebarSection(sidebar, "TIME REMAINING", timerLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 40)));
 
         subjectDropdown = new JComboBox<>(new String[]{"Physics", "Computer Science", "Biology", "General"});
-        subjectDropdown.setSelectedItem(selectedSubject);
+        subjectDropdown.setMaximumSize(new Dimension(220, 35));
+        addSidebarSection(sidebar, "SUBJECT", subjectDropdown);
 
         timerDropdown = new JComboBox<>(new String[]{"No Timer", "15 Seconds", "30 Seconds", "60 Seconds"});
+        timerDropdown.setMaximumSize(new Dimension(220, 35));
+        addSidebarSection(sidebar, "TIME LIMIT", timerDropdown);
 
-        settingsPanel.add(new JLabel("Subject:"));
-        settingsPanel.add(subjectDropdown);
-        settingsPanel.add(new JLabel("Timer:"));
-        settingsPanel.add(timerDropdown);
+        sidebar.add(Box.createVerticalGlue());
+        sidebar.add(aiStatusLabel);
 
-        // Main Control Buttons
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 30, 15));
-        JButton btnScan = new JButton("📷 Scan Textbook Page");
-        btnScan.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        JButton btnScan = new JButton("SCAN TEXTBOOK");
+        btnScan.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnScan.setMaximumSize(new Dimension(220, 45));
+        btnScan.setBackground(new Color(52, 152, 219));
+        btnScan.setForeground(Color.WHITE);
         btnScan.addActionListener(e -> performScan());
+        sidebar.add(Box.createRigidArea(new Dimension(0, 10)));
+        sidebar.add(btnScan);
 
-        buttonPanel.add(btnScan);
+        // --- QUIZ CONTENT ---
+        JPanel quizContent = new JPanel(new BorderLayout(20, 20));
+        quizContent.setOpaque(false);
+        quizContent.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 30));
 
-        // Combine settings and buttons into the container
-        bottomContainer.add(settingsPanel, BorderLayout.NORTH);
-        bottomContainer.add(buttonPanel, BorderLayout.SOUTH);
+        questionArea = new JTextArea();
+        questionArea.setFont(new Font("Segoe UI", Font.PLAIN, 24));
+        questionArea.setLineWrap(true);
+        questionArea.setWrapStyleWord(true);
+        questionArea.setBackground(new Color(40, 40, 40));
+        questionArea.setForeground(Color.WHITE);
+        JScrollPane qScroll = new JScrollPane(questionArea);
+        qScroll.setBorder(BorderFactory.createLineBorder(new Color(60, 60, 60), 2));
 
-        // Add the single container to the SOUTH position
-        add(bottomContainer, BorderLayout.SOUTH);
+        JPanel btnGrid = new JPanel(new GridLayout(2, 2, 15, 15));
+        btnGrid.setOpaque(false);
+        btnA = createOptionButton("A"); btnB = createOptionButton("B");
+        btnC = createOptionButton("C"); btnD = createOptionButton("D");
+        btnGrid.add(btnA); btnGrid.add(btnB); btnGrid.add(btnC); btnGrid.add(btnGrid.add(btnD));
+
+        quizContent.add(difficultyLabel, BorderLayout.NORTH);
+        quizContent.add(qScroll, BorderLayout.CENTER);
+        quizContent.add(btnGrid, BorderLayout.SOUTH);
+
+        add(sidebar, BorderLayout.WEST);
+        add(quizContent, BorderLayout.CENTER);
+    }
+
+    private void addSidebarSection(JPanel p, String title, JComponent comp) {
+        JLabel l = new JLabel(title);
+        l.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        l.setForeground(Color.GRAY);
+        l.setAlignmentX(Component.CENTER_ALIGNMENT);
+        p.add(l);
+        p.add(Box.createRigidArea(new Dimension(0, 10)));
+        p.add(comp);
+    }
+
+    // Helper to keep sidebar text consistent
+    private void autoAddSidebarLabel(JPanel panel, String text) {
+        JLabel l = new JLabel(text);
+        l.setFont(new Font("Segoe UI", Font.BOLD, 11));
+        l.setForeground(new Color(120, 120, 120));
+        l.setAlignmentX(Component.CENTER_ALIGNMENT);
+        panel.add(l);
+        panel.add(Box.createRigidArea(new Dimension(0, 8)));
+    }
+
+    private JButton createStyledOptionButton(String text) {
+        JButton btn = new JButton(text);
+        btn.setPreferredSize(new Dimension(0, 80));
+        btn.setFont(new Font("Segoe UI", Font.PLAIN, 18));
+        btn.addActionListener(e -> checkAnswer(btn.getText()));
+        return btn;
+    }
+
+    private void updateStatus(String text) {
+        if (aiStatusLabel != null) {
+            aiStatusLabel.setText(text);
+        } else {
+            System.out.println("Status Update: " + text); // Fallback to console if UI isn't ready
+        }
     }
 
     private void startNewTimer() {
-        if (userSelectedTime <= 0) return;
+        if (userSelectedTime <= 0) {
+            timerLabel.setText("Off");
+            return;
+        }
 
         if (quizTimer != null && quizTimer.isRunning()) {
             quizTimer.stop();
         }
 
         secondsRemaining = userSelectedTime;
-        timerLabel.setText("Time Left: " + secondsRemaining + "s");
-        timerLabel.setForeground(Color.BLACK); // Reset color
+        timerLabel.setText(secondsRemaining + "s"); // Shorter text to prevent "..."
 
         quizTimer = new javax.swing.Timer(1000, e -> {
             secondsRemaining--;
+            timerLabel.setText(secondsRemaining + "s");
 
             if (secondsRemaining <= 5) {
-                timerLabel.setForeground(Color.RED); // Warning color
+                timerLabel.setForeground(Color.YELLOW);
             }
-
-            timerLabel.setText("Time Left: " + secondsRemaining + "s");
 
             if (secondsRemaining <= 0) {
                 quizTimer.stop();
@@ -488,71 +547,108 @@ public class OfflineTutorApp extends JFrame {
         if (quizTimer != null) quizTimer.stop();
         if (currentQuestion == null) return;
 
-        // Save the user's choice into the question object
         currentQuestion.userProvidedAnswer = selectedText;
-        sessionLog.add(currentQuestion); // Add to our permanent session log
+        sessionLog.add(currentQuestion);
 
-        float score = selectedText.equals(currentQuestion.correctAnswer) ? 1.0f : 0.0f;
-
-        if (selectedText.equals(currentQuestion.correctAnswer)) {
-            score = 1.0f;
-            JOptionPane.showMessageDialog(this, "Correct! ✅");
-        } else {
-            score = 0.0f;
-            JOptionPane.showMessageDialog(this,
-                    "Wrong! ❌\n\nCorrect Answer: " + currentQuestion.correctAnswer +
-                            "\n\nContext:\n\"" + currentQuestion.originalContext + "\"");
-        }
+        boolean isCorrect = selectedText.equals(currentQuestion.correctAnswer);
+        float score = isCorrect ? 1.0f : 0.0f;
 
         studentHistory.add(score);
-        updateAI(score);
+        updateAI(score); // Mastery updates here
         removeQuestionFromPools(currentQuestion);
 
+        if (isCorrect) {
+            JOptionPane.showMessageDialog(this, "Correct! ✅");
+        } else {
+            JOptionPane.showMessageDialog(this, "Wrong! ❌\nCorrect Answer: " + currentQuestion.correctAnswer);
+        }
+
+        // This ensures the next question loads only AFTER the user clicks 'OK'
         boolean nextIsEasy = (score == 0.0f);
-        loadNextQuestion(nextIsEasy);
+        SwingUtilities.invokeLater(() -> loadNextQuestion(nextIsEasy));
     }
 
     private void showPerformanceReport() {
         if (sessionLog.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "No questions answered yet.");
+            JOptionPane.showMessageDialog(this, "No data to generate report.");
             return;
         }
 
-        // Calculate Accuracy
+        // --- 1. CALCULATE STATISTICS ---
+        long total = sessionLog.size();
         long correctCount = sessionLog.stream()
                 .filter(q -> q.userProvidedAnswer.equals(q.correctAnswer)).count();
-        double accuracy = (double) correctCount / sessionLog.size() * 100;
+        double accuracy = (double) correctCount / total * 100;
 
-        // Setup Table Model
-        String[] columns = {"Status", "Question", "Your Answer", "Correct Answer", "Textbook Reference"};
+        // Determine Grade
+        String grade;
+        Color gradeColor;
+        if (accuracy >= 90) { grade = "A+"; gradeColor = new Color(46, 204, 113); }
+        else if (accuracy >= 75) { grade = "B"; gradeColor = new Color(52, 152, 219); }
+        else if (accuracy >= 50) { grade = "C"; gradeColor = new Color(230, 126, 34); }
+        else { grade = "D"; gradeColor = new Color(231, 76, 60); }
+
+        // --- 2. CREATE THE DIALOG ---
+        JDialog reportDialog = new JDialog(this, "Student Report Card", true);
+        reportDialog.setSize(700, 600);
+        reportDialog.setLocationRelativeTo(this);
+        reportDialog.setLayout(new BorderLayout());
+
+        // --- 3. HEADER PANEL (Grade & Summary) ---
+        JPanel header = new JPanel(new GridLayout(1, 2));
+        header.setBackground(new Color(35, 35, 35));
+        header.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
+        // Left side: Large Grade
+        JLabel gradeLabel = new JLabel(grade, SwingConstants.CENTER);
+        gradeLabel.setFont(new Font("Serif", Font.BOLD, 80));
+        gradeLabel.setForeground(gradeColor);
+        gradeLabel.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(gradeColor), "FINAL GRADE", 0, 0, null, Color.GRAY));
+
+        // Right side: Statistics
+        String statsHtml = "<html><body style='font-family:Segoe UI; color:white;'>" +
+                "<h2 style='margin:0;'>PERFORMANCE SUMMARY</h2><br>" +
+                "<b>Subject:</b> " + selectedSubject + "<br>" +
+                "<b>Total Questions:</b> " + total + "<br>" +
+                "<b>Correct Answers:</b> " + correctCount + "<br>" +
+                "<b>Accuracy:</b> " + String.format("%.1f%%", accuracy) +
+                "</body></html>";
+        JLabel statsLabel = new JLabel(statsHtml);
+
+        header.add(gradeLabel);
+        header.add(statsLabel);
+
+        // --- 4. DATA TABLE (Detailed Breakdown) ---
+        String[] columns = {"Status", "Topic / Question", "Your Choice", "Correct Answer"};
         DefaultTableModel model = new DefaultTableModel(columns, 0);
-
         for (QuizItem q : sessionLog) {
             boolean isCorrect = q.userProvidedAnswer.equals(q.correctAnswer);
             model.addRow(new Object[]{
-                    isCorrect ? "✅" : "❌",
-                    q.questionText.length() > 50 ? q.questionText.substring(0, 50) + "..." : q.questionText,
+                    isCorrect ? "PASS" : "FAIL",
+                    q.displaySentence.length() > 60 ? q.displaySentence.substring(0, 60) + "..." : q.displaySentence,
                     q.userProvidedAnswer,
-                    q.correctAnswer,
-                    q.originalContext // The "Reference Lines"
+                    q.correctAnswer
             });
         }
 
         JTable table = new JTable(model);
-        table.getColumnModel().getColumn(0).setPreferredWidth(50);
-        table.getColumnModel().getColumn(4).setPreferredWidth(200); // Give space for reference lines
+        table.setRowHeight(30);
+        table.setEnabled(false); // Make table read-only
+        JScrollPane scrollPane = new JScrollPane(table);
+        scrollPane.setBorder(BorderFactory.createTitledBorder("DETAILED BREAKDOWN"));
 
-        JPanel panel = new JPanel(new BorderLayout(10, 10));
-        JLabel summaryLabel = new JLabel(String.format(
-                "<html><body style='padding:10px;'><h2>Session Summary</h2>" +
-                        "<b>Total:</b> %d | <b>Correct:</b> %d | <b>Accuracy:</b> %.1f%%</body></html>",
-                sessionLog.size(), correctCount, accuracy));
+        // --- 5. FOOTER ---
+        JButton closeBtn = new JButton("Close Report");
+        closeBtn.addActionListener(e -> reportDialog.dispose());
+        JPanel footer = new JPanel();
+        footer.add(closeBtn);
 
-        panel.add(summaryLabel, BorderLayout.NORTH);
-        panel.add(new JScrollPane(table), BorderLayout.CENTER);
-        panel.setPreferredSize(new Dimension(900, 500));
+        reportDialog.add(header, BorderLayout.NORTH);
+        reportDialog.add(scrollPane, BorderLayout.CENTER);
+        reportDialog.add(footer, BorderLayout.SOUTH);
 
-        JOptionPane.showMessageDialog(this, panel, "Final Performance Review", JOptionPane.PLAIN_MESSAGE);
+        reportDialog.setVisible(true);
     }
 
     private void removeQuestionFromPools(QuizItem q) {
@@ -572,24 +668,28 @@ public class OfflineTutorApp extends JFrame {
         } catch (Exception e) {}
 
         int percent = (int)(probability * 100);
-        masteryBar.setValue(percent);
-        masteryBar.setString("Mastery: " + percent + "%");
+
+        // Explicitly update the circle mastery component
+        if (circleMastery != null) {
+            circleMastery.setProgress(percent);
+        }
 
         if (probability < 0.4) {
-            aiStatusLabel.setForeground(Color.RED);
-            aiStatusLabel.setText("AI: DETECTED STRUGGLE -> Switching to Easier Questions");
+            aiStatusLabel.setForeground(new Color(231, 76, 60));
+            aiStatusLabel.setText("Status: Review Needed");
         } else {
-            aiStatusLabel.setForeground(new Color(39, 174, 96));
-            aiStatusLabel.setText("AI: DETECTED MASTERY -> Switching to Harder Questions");
+            aiStatusLabel.setForeground(new Color(46, 204, 113));
+            aiStatusLabel.setText("Status: Mastering Topic");
         }
     }
 
     private void handleExitRequest() {
         int response = JOptionPane.showConfirmDialog(
-                this, "Quit Now?", "Exit Confirmation", JOptionPane.YES_NO_OPTION);
+                this, "Are you sure you want to exit the session?",
+                "Exit Confirmation", JOptionPane.YES_NO_OPTION);
 
         if (response == JOptionPane.YES_OPTION) {
-            showPerformanceReport(); // Show marks and wrong answers first
+            showPerformanceReport(); // This now opens the Dialog
             saveProgress();
             System.exit(0);
         }
