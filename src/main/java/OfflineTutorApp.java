@@ -33,6 +33,7 @@ import java.util.Arrays;
 
 public class OfflineTutorApp extends JFrame {
 
+
     // --- GUI Components ---
     private JTextArea questionArea;
     private JLabel aiStatusLabel;
@@ -48,6 +49,7 @@ public class OfflineTutorApp extends JFrame {
     private List<QuizItem> hardQuestions = new ArrayList<>();
     private Set<String> askedQuestionIDs = new HashSet<>();
     private QuizItem currentQuestion;
+    
 
     // --- SUBJECT SPECIFIC STOP WORDS ---
     private List<String> currentBannedTopics = new ArrayList<>();
@@ -306,27 +308,37 @@ public class OfflineTutorApp extends JFrame {
     // --- LOGIC: SCANNING ---
     private void performScan() {
         JFileChooser chooser = new JFileChooser();
-        chooser.setFileFilter(new FileNameExtensionFilter("Images (JPG, PNG)", "jpg", "png", "jpeg"));
+        // Update filter to accept both Images and PDFs
+        chooser.setFileFilter(new FileNameExtensionFilter("Documents (PDF, JPG, PNG)", "pdf", "jpg", "png", "jpeg"));
 
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            File imageFile = chooser.getSelectedFile();
-            displayImage(imageFile);
-            aiStatusLabel.setText("Applying " + selectedSubject + " Filters... Please Wait.");
+            File selectedFile = chooser.getSelectedFile();
+            aiStatusLabel.setText("Processing... Please Wait.");
 
             new Thread(() -> {
                 try {
-                    File cleanFile = cleanImage(imageFile);
-                    Tesseract tesseract = new Tesseract();
-                    tesseract.setDatapath("tessdata");
-                    String rawText = tesseract.doOCR(cleanFile);
+                    StringBuilder extractedText = new StringBuilder();
+                    String fileName = selectedFile.getName().toLowerCase();
 
-                    generateMCQ(rawText);
+                    if (fileName.endsWith(".pdf")) {
+                        // Handle PDF (multi-page)
+                        extractedText.append(processPDF(selectedFile));
+                    } else {
+                        // Handle single image (existing logic)
+                        displayImage(selectedFile);
+                        File cleanFile = cleanImage(selectedFile);
+                        Tesseract tesseract = new Tesseract();
+                        tesseract.setDatapath("tessdata");
+                        extractedText.append(tesseract.doOCR(cleanFile));
+                    }
+
+                    generateMCQ(extractedText.toString());
 
                     SwingUtilities.invokeLater(() -> {
                         if (easyQuestions.isEmpty() && hardQuestions.isEmpty()) {
-                            aiStatusLabel.setText("No valid topics found. Try a clearer image.");
+                            aiStatusLabel.setText("No valid topics found.");
                         } else {
-                            aiStatusLabel.setText("Generation Complete!");
+                            aiStatusLabel.setText("Scan Complete!");
                             loadNextQuestion(true);
                         }
                     });
@@ -336,6 +348,35 @@ public class OfflineTutorApp extends JFrame {
                 }
             }).start();
         }
+    }
+
+    private String processPDF(File pdfFile) throws Exception {
+        StringBuilder pdfText = new StringBuilder();
+        try (org.apache.pdfbox.pdmodel.PDDocument document = org.apache.pdfbox.pdmodel.PDDocument.load(pdfFile)) {
+            org.apache.pdfbox.rendering.PDFRenderer pdfRenderer = new org.apache.pdfbox.rendering.PDFRenderer(document);
+            Tesseract tesseract = new Tesseract();
+            tesseract.setDatapath("tessdata");
+
+            for (int i = 0; i < document.getNumberOfPages(); i++) {
+                final int pageNum = i + 1;
+                SwingUtilities.invokeLater(() -> aiStatusLabel.setText("Scanning Page " + pageNum + "..."));
+
+                // 1. Try to extract digital text
+                org.apache.pdfbox.text.PDFTextStripper stripper = new org.apache.pdfbox.text.PDFTextStripper();
+                stripper.setStartPage(pageNum);
+                stripper.setEndPage(pageNum);
+                String text = stripper.getText(document);
+
+                // 2. If the page is a scan (empty text), use OCR
+                if (text.trim().isEmpty()) {
+                    BufferedImage bim = pdfRenderer.renderImageWithDPI(i, 300); // 300 DPI for OCR accuracy
+                    text = tesseract.doOCR(bim);
+                }
+
+                pdfText.append(text).append("\n");
+            }
+        }
+        return pdfText.toString();
     }
 
     private void displayImage(File file) {
@@ -507,6 +548,7 @@ public class OfflineTutorApp extends JFrame {
     }
 
     public static void main(String[] args) {
+        com.formdev.flatlaf.FlatDarkLaf.setup();
         SwingUtilities.invokeLater(() -> new OfflineTutorApp().setVisible(true));
     }
 }
