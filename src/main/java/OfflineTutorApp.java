@@ -12,6 +12,10 @@ import opennlp.tools.tokenize.Tokenizer;
 import opennlp.tools.tokenize.TokenizerME;
 import opennlp.tools.tokenize.TokenizerModel;
 import javax.swing.table.DefaultTableModel;
+import java.awt.geom.Path2D;
+import java.awt.RenderingHints;
+import java.awt.GradientPaint;
+import java.awt.BasicStroke;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 
@@ -244,6 +248,39 @@ public class OfflineTutorApp extends JFrame {
         ));
     }
 
+    class BackgroundPanel extends JPanel {
+        private Image img;
+
+        public BackgroundPanel(String path) {
+            try {
+                // Loads the image from the project root or specified path
+                img = new ImageIcon(path).getImage();
+            } catch (Exception e) {
+                System.err.println("Background Image Load Error: " + e.getMessage());
+            }
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g;
+
+            if (img != null) {
+                // Draws the image scaled to fit the window size
+                g2.drawImage(img, 0, 0, getWidth(), getHeight(), this);
+
+                // Apply Glassmorphism: A semi-transparent dark overlay
+                // This makes sure white text and red graph lines stand out
+                g2.setColor(new Color(0, 0, 0, 160)); // Adjust 160 for more/less darkness
+                g2.fillRect(0, 0, getWidth(), getHeight());
+            } else {
+                // Fallback to a solid dark color if the image is missing
+                g2.setColor(new Color(18, 18, 18));
+                g2.fillRect(0, 0, getWidth(), getHeight());
+            }
+        }
+    }
+
 
 
     private class SplashScreen extends JDialog {
@@ -347,23 +384,23 @@ public class OfflineTutorApp extends JFrame {
 
         new Thread(() -> {
             try {
-                // 1. Initialize logic/AI while splash is visible
                 initAI();
                 loadProgress();
-                Thread.sleep(3000); // Allow splash to be seen
-
+                Thread.sleep(3000);
                 SwingUtilities.invokeLater(() -> {
                     splash.dispose();
 
-                    // 2. Show the New Header/Mode Selection Window
-                    ModeSelectionScreen selector = new ModeSelectionScreen(this);
-                    selector.setVisible(true); // Execution pauses here until a mode is picked
+                    // 1. Launch the Homepage (execution pauses here)
+                    PaLOHomePage home = new PaLOHomePage(this);
+                    home.setVisible(true);
 
-                    // 3. Build Main UI based on selection
+                    // 2. Setup the Main Quiz Window
                     setupUI();
-                    setSize(1400, 800);
-                    setLocationRelativeTo(null);
-                    setVisible(true);
+
+                    // 3. SET WINDOW SIZE (Ensures it is BIG as before)
+                    setSize(1400, 850); // Set your desired large dimensions here
+                    setLocationRelativeTo(null); // Centers the large window on screen
+                    setVisible(true); // Makes the big window visible
                 });
             } catch (Exception e) { e.printStackTrace(); }
         }).start();
@@ -1026,6 +1063,174 @@ public class OfflineTutorApp extends JFrame {
         } catch (Exception e) {}
     }
 
+    class ModernMenuButton extends JButton {
+        private Color accent;
+        private float alpha = 0.2f;
+
+        public ModernMenuButton(String htmlText, Color accent) {
+            super("<html><center>" + htmlText + "</center></html>");
+            this.accent = accent;
+            setForeground(Color.WHITE);
+            setFont(new Font("Segoe UI Semibold", Font.PLAIN, 15));
+            setContentAreaFilled(false);
+            setFocusPainted(false);
+            setCursor(new Cursor(Cursor.HAND_CURSOR));
+            setBorder(BorderFactory.createLineBorder(new Color(255, 255, 255, 40)));
+
+            addMouseListener(new java.awt.event.MouseAdapter() {
+                public void mouseEntered(java.awt.event.MouseEvent e) { alpha = 0.7f; repaint(); }
+                public void mouseExited(java.awt.event.MouseEvent e) { alpha = 0.2f; repaint(); }
+            });
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            // Draws the glowing round background
+            g2.setColor(new Color(accent.getRed(), accent.getGreen(), accent.getBlue(), (int)(alpha * 255)));
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
+            super.paintComponent(g);
+            g2.dispose();
+        }
+    }
+
+    class ProgressGraphPanel extends JPanel {
+        private float animProgress = 0f;
+
+        public void startAnimation() {
+            javax.swing.Timer timer = new javax.swing.Timer(25, e -> {
+                animProgress += 0.02f;
+                if (animProgress >= 1f) {
+                    animProgress = 1f;
+                    ((javax.swing.Timer)e.getSource()).stop();
+                }
+                repaint();
+            });
+            timer.start();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g;
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            if (studentHistory.size() < 2) {
+                g2.setColor(Color.GRAY);
+                g2.drawString("Requires more data to render graph...", 20, getHeight() / 2);
+                return;
+            }
+
+            Path2D path = new Path2D.Float();
+            float xStep = (float) getWidth() / (studentHistory.size() - 1);
+
+            // Starting point
+            path.moveTo(0, getHeight() - (studentHistory.get(0) * getHeight() * 0.7f) - 40);
+
+            for (int i = 1; i < studentHistory.size() * animProgress; i++) {
+                float x = i * xStep;
+                float y = getHeight() - (studentHistory.get(i) * getHeight() * 0.7f) - 40;
+                path.lineTo(x, y);
+            }
+
+            g2.setStroke(new BasicStroke(4f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setColor(new Color(231, 76, 60)); // Miles Morales Red
+            g2.draw(path);
+        }
+    }
+
+    private class PaLOHomePage extends JDialog {
+        public PaLOHomePage(Frame owner) {
+            super(owner, true);
+            setUndecorated(true);
+            setSize(1200, 750); // Slightly wider for graph room
+            setLocationRelativeTo(null);
+
+            // CUSTOM BACKGROUND (ensure path matches your project)
+            BackgroundPanel bgPanel = new BackgroundPanel("assets/homepage_bg.jpg");
+            bgPanel.setLayout(new BorderLayout());
+
+            // --- TOP SECTION: WELCOME & QUIT ---
+            JPanel topBar = new JPanel(new BorderLayout());
+            topBar.setOpaque(false);
+            topBar.setBorder(BorderFactory.createEmptyBorder(40, 50, 0, 50));
+
+            // Welcome Text (Top Left)
+            JLabel welcome = new JLabel("<html><font color='#888888'>WELCOME BACK,</font><br>" +
+                    "<font size='7' color='white'><b>SCHOLAR</b></font></html>");
+
+            // Quit Button (Top Right)
+            JButton quitBtn = new JButton("✕ QUIT");
+            quitBtn.setFont(new Font("Segoe UI", Font.BOLD, 14));
+            quitBtn.setForeground(Color.WHITE);
+            quitBtn.setContentAreaFilled(false);
+            quitBtn.setBorderPainted(false);
+            quitBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            quitBtn.addActionListener(e -> System.exit(0));
+
+            topBar.add(welcome, BorderLayout.WEST);
+            topBar.add(quitBtn, BorderLayout.EAST);
+
+            // --- CENTER SECTION: ANIMATED GRAPH ---
+            JPanel centerArea = new JPanel(new BorderLayout(20, 20));
+            centerArea.setOpaque(false);
+            centerArea.setBorder(BorderFactory.createEmptyBorder(40, 50, 40, 50));
+
+            ProgressGraphPanel graph = new ProgressGraphPanel();
+            graph.setOpaque(false);
+
+            JLabel masteryMsg = new JLabel(getMasteryMessage());
+            masteryMsg.setFont(new Font("Segoe UI Light", Font.ITALIC, 22));
+            masteryMsg.setForeground(new Color(200, 200, 200));
+
+            centerArea.add(graph, BorderLayout.CENTER);
+            centerArea.add(masteryMsg, BorderLayout.SOUTH);
+
+            // --- BOTTOM SECTION: NAVIGATION ---
+            JPanel bottomBar = new JPanel(new BorderLayout());
+            bottomBar.setOpaque(false);
+            bottomBar.setBorder(BorderFactory.createEmptyBorder(0, 50, 50, 50));
+
+            // Bottom Left: Audio Mode
+            ModernMenuButton btnAudio = new ModernMenuButton("🔊 Audio assisted mode", new Color(52, 152, 219));
+            btnAudio.addActionListener(e -> { isAudioMode = true; dispose(); });
+
+            // Bottom Right: Offline & Online
+            JPanel rightGroup = new JPanel(new FlowLayout(FlowLayout.RIGHT, 25, 0));
+            rightGroup.setOpaque(false);
+
+            ModernMenuButton btnOffline = new ModernMenuButton("Lets study<br>offline with PAL", new Color(46, 204, 113));
+            ModernMenuButton btnOnline = new ModernMenuButton("Go online<br>for extensive learning", new Color(149, 165, 166));
+
+            btnOffline.addActionListener(e -> { isAudioMode = false; dispose(); });
+            btnOnline.setEnabled(false); // Locked feature
+
+            rightGroup.add(btnOffline);
+            rightGroup.add(btnOnline);
+
+            bottomBar.add(btnAudio, BorderLayout.WEST);
+            bottomBar.add(rightGroup, BorderLayout.EAST);
+
+            bgPanel.add(topBar, BorderLayout.NORTH);
+            bgPanel.add(centerArea, BorderLayout.CENTER);
+            bgPanel.add(bottomBar, BorderLayout.SOUTH);
+
+            add(bgPanel);
+
+            // Trigger Animation
+            SwingUtilities.invokeLater(graph::startAnimation);
+        }
+
+        private String getMasteryMessage() {
+            if (studentHistory.isEmpty()) return "Analyze your first page to track progress!";
+            float avg = 0;
+            for(float f : studentHistory) avg += f;
+            avg /= studentHistory.size();
+            return (avg > 0.7) ? "Your logic skills are sharp. Keep it up!" : "Consistency is key. Focus on the difficult topics.";
+        }
+    }
+
     private void initAI() {
         try {
             Path modelPath = Paths.get("tutor_brain.pt");
@@ -1047,7 +1252,7 @@ public class OfflineTutorApp extends JFrame {
 
     public static void main(String[] args) {
         com.formdev.flatlaf.FlatDarkLaf.setup();
-        // Don't call setVisible(true) here, the constructor does it now
+        // Launch the app constructor on the Event Dispatch Thread
         SwingUtilities.invokeLater(() -> new OfflineTutorApp());
     }
 }
