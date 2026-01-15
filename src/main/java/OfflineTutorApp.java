@@ -12,6 +12,9 @@ import opennlp.tools.tokenize.Tokenizer;
 import opennlp.tools.tokenize.TokenizerME;
 import opennlp.tools.tokenize.TokenizerModel;
 import javax.swing.table.DefaultTableModel;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.awt.geom.Arc2D;
 import java.awt.geom.Path2D;
 import java.awt.RenderingHints;
 import java.awt.GradientPaint;
@@ -19,6 +22,11 @@ import java.awt.BasicStroke;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 
+import javax.sound.sampled.AudioInputStream;
+import javax.sound.sampled.AudioSystem;
+import javax.sound.sampled.Clip;
+import javax.sound.sampled.*;
+import java.io.File;
 import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
@@ -51,6 +59,7 @@ public class OfflineTutorApp extends JFrame {
     private JProgressBar masteryBar;
     private JButton btnA, btnB, btnC, btnD;
     private JLabel imageViewer;
+    private Clip zenClip; // Stores the audio stream for lo-fi beats
 
     // --- Logic & Data ---
     private Predictor<float[], Float> predictor;
@@ -281,6 +290,186 @@ public class OfflineTutorApp extends JFrame {
         }
     }
 
+    // Define this as a proper inner class so the casting works
+    private class ModernToggle extends JButton {
+        private boolean active = false;
+        private String label;
+
+        public ModernToggle(String label) {
+            this.label = label;
+            setText(label + ": OFF");
+            setFont(new Font("Segoe UI Bold", Font.PLAIN, 12));
+            setForeground(Color.WHITE);
+            setPreferredSize(new Dimension(140, 40));
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setFocusPainted(false);
+            setCursor(new Cursor(Cursor.HAND_CURSOR));
+        }
+
+        public void toggle() {
+            active = !active;
+            setText(label + (active ? ": ON" : ": OFF"));
+            repaint();
+        }
+
+        public boolean isActive() { return active; }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            // Background: If active, use theme color, else dark gray
+            g2.setColor(active ? currentAccentColor : new Color(255, 255, 255, 30));
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 25, 25);
+
+            // The Sliding White Knob
+            g2.setColor(Color.WHITE);
+            int knobSize = getHeight() - 10;
+            int x = active ? (getWidth() - knobSize - 5) : 5;
+            g2.fillOval(x, 5, knobSize, knobSize);
+
+            super.paintComponent(g);
+            g2.dispose();
+        }
+    }
+
+    class CircularTimer extends JComponent {
+        private int seconds = 0;
+        private final int MAX_SECONDS = 3600; // 60 minutes max
+        private final int INCREMENT = 300; // 5 minute steps
+        private boolean isRunning = false;
+
+        public CircularTimer() {
+            setPreferredSize(new Dimension(220, 220));
+            setMaximumSize(new Dimension(220, 220));
+            setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+            MouseAdapter ma = new MouseAdapter() {
+                @Override
+                public void mousePressed(MouseEvent e) {
+                    // Trigger custom input if clicking near the center circle
+                    if (e.getPoint().distance(getWidth()/2.0, getHeight()/2.0) < 45) {
+                        showCustomInputDialog();
+                    }
+                }
+
+                @Override
+                public void mouseDragged(MouseEvent e) {
+                    if (isRunning) return;
+
+                    double dx = e.getX() - getWidth() / 2.0;
+                    double dy = e.getY() - getHeight() / 2.0;
+                    double angle = Math.atan2(dy, dx);
+
+                    double normalized = (angle + Math.PI / 2.0) / (2.0 * Math.PI);
+                    if (normalized < 0) normalized += 1.0;
+
+                    int rawSeconds = (int) (normalized * MAX_SECONDS);
+                    seconds = (rawSeconds / INCREMENT) * INCREMENT;
+
+                    if (seconds == 0 && normalized > 0.1) seconds = MAX_SECONDS;
+
+                    userSelectedTime = seconds;
+                    repaint();
+                }
+            };
+            addMouseListener(ma);
+            addMouseMotionListener(ma);
+        }
+
+        private void showCustomInputDialog() {
+            String input = JOptionPane.showInputDialog(this, "Enter minutes (1-60):", "Custom Timer", JOptionPane.PLAIN_MESSAGE);
+            try {
+                int mins = Integer.parseInt(input);
+                if (mins > 0 && mins <= 60) {
+                    seconds = mins * 60;
+                    userSelectedTime = seconds;
+                    repaint();
+                }
+            } catch (Exception ex) { }
+        }
+
+        public void setSeconds(int s) { this.seconds = s; repaint(); }
+        public int getSeconds() {
+            return this.seconds;
+        }
+        public void setRunning(boolean r) { this.isRunning = r; }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            int centerX = getWidth() / 2;
+            int centerY = getHeight() / 2;
+            int radius = Math.min(getWidth(), getHeight()) / 2 - 20;
+
+            // --- THEME-REACTIVE COLOR LOGIC ---
+            // Priority 1: Red Warning if timer < 60s and running
+            // Priority 2: Use the Global Accent Color selected in Settings
+            Color themeColor;
+            if (isRunning && seconds > 0 && seconds <= 60) {
+                themeColor = new Color(255, 45, 85); // Critical Red
+            } else {
+                themeColor = currentAccentColor; // Reactive Global Theme
+            }
+
+            // 1. DRAW ANALOG TICK MARKS
+            for (int i = 0; i < 60; i++) {
+                double angle = Math.toRadians(i * 6 - 90);
+                int lineStart = (i % 5 == 0) ? radius - 12 : radius - 6;
+                g2.setColor(i % 5 == 0 ? new Color(255, 255, 255, 180) : new Color(255, 255, 255, 60));
+                g2.setStroke(new BasicStroke(i % 5 == 0 ? 2f : 1f));
+
+                int x1 = (int) (centerX + lineStart * Math.cos(angle));
+                int y1 = (int) (centerY + lineStart * Math.sin(angle));
+                int x2 = (int) (centerX + radius * Math.cos(angle));
+                int y2 = (int) (centerY + radius * Math.sin(angle));
+                g2.drawLine(x1, y1, x2, y2);
+            }
+
+            // 2. DRAW PROGRESS ARC & GLOW
+            int extent = (int) (((double) seconds / MAX_SECONDS) * 360);
+            // Neon Glow
+            g2.setStroke(new BasicStroke(12, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setColor(new Color(themeColor.getRed(), themeColor.getGreen(), themeColor.getBlue(), 40));
+            g2.drawArc(centerX - radius, centerY - radius, radius * 2, radius * 2, 90, -extent);
+            // Sharp Arc
+            g2.setStroke(new BasicStroke(6, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setColor(themeColor);
+            g2.drawArc(centerX - radius, centerY - radius, radius * 2, radius * 2, 90, -extent);
+
+            // 3. DRAW MOVING HAND KNOB
+            double handAngle = Math.toRadians(((double) seconds / MAX_SECONDS * 360) - 90);
+            int handX = (int) (centerX + radius * Math.cos(handAngle));
+            int handY = (int) (centerY + radius * Math.sin(handAngle));
+
+            g2.setColor(new Color(themeColor.getRed(), themeColor.getGreen(), themeColor.getBlue(), 80));
+            g2.fillOval(handX - 10, handY - 10, 20, 20); // Glow
+            g2.setColor(Color.WHITE);
+            g2.fillOval(handX - 6, handY - 6, 12, 12); // Solid Center
+
+            // 4. CENTER CONCENTRIC TEXT AREA
+            int innerR = 48;
+            g2.setColor(new Color(30, 30, 30));
+            g2.fillOval(centerX - innerR, centerY - innerR, innerR * 2, innerR * 2);
+            g2.setColor(new Color(themeColor.getRed(), themeColor.getGreen(), themeColor.getBlue(), 120));
+            g2.setStroke(new BasicStroke(2f));
+            g2.drawOval(centerX - innerR, centerY - innerR, innerR * 2, innerR * 2);
+
+            // 5. CENTERED TEXT
+            g2.setFont(new Font("Segoe UI Black", Font.BOLD, 22));
+            g2.setColor(Color.WHITE);
+            String timeStr = (seconds < 60 && isRunning) ? seconds + "s" : (seconds / 60) + "m";
+            FontMetrics fm = g2.getFontMetrics();
+            g2.drawString(timeStr, centerX - (fm.stringWidth(timeStr) / 2), centerY + (fm.getAscent() / 3));
+
+            g2.dispose();
+        }
+    }
+
 
 
     private class SplashScreen extends JDialog {
@@ -375,6 +564,60 @@ public class OfflineTutorApp extends JFrame {
         }
     }
 
+    private JButton createQuitQuizButton() {
+        JButton btn = new JButton("END QUIZ") { // Renamed to END QUIZ for clarity
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+                // Highlighted Red when hovered - Minimalist style
+                if (getModel().isRollover()) {
+                    g2.setColor(new Color(255, 45, 85)); // Pure Bright Highlight
+                } else {
+                    g2.setColor(new Color(255, 45, 85, 60)); // Translucent Idle
+                }
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 12, 12);
+
+                super.paintComponent(g);
+                g2.dispose();
+            }
+        };
+
+        // Styling
+        btn.setFont(new Font("Segoe UI Black", Font.BOLD, 14));
+        btn.setForeground(Color.WHITE);
+        btn.setContentAreaFilled(false);
+        btn.setBorderPainted(false);
+        btn.setFocusPainted(false);
+        btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+        btn.addActionListener(e -> {
+            // 1. Stop the clock immediately
+            if (quizTimer != null) quizTimer.stop();
+
+            // 2. Show the summary of the current session
+            if (!sessionLog.isEmpty()) {
+                showPerformanceReport();
+            }
+
+            // 3. Save progress data
+            saveProgress();
+
+            // 4. Close the Quiz Window (this Frame)
+            this.dispose();
+
+            // 5. Re-open the main Homepage
+            // Assuming PaLOHomePage constructor takes (Frame owner)
+            SwingUtilities.invokeLater(() -> {
+                PaLOHomePage home = new PaLOHomePage(null);
+                home.setVisible(true);
+            });
+        });
+
+        return btn;
+    }
+
     // Add this field at the top of your class
     private boolean isAudioMode = false;
 
@@ -409,31 +652,42 @@ public class OfflineTutorApp extends JFrame {
     private CircleMasteryPanel circleMastery;
 
 
+    private CircularTimer clockTimer; // Add this as a field at the top of your class
+
     private void setupUI() {
         setTitle("PaLO - Adaptive Learning Orchestrator (" + selectedSubject + " Mode)");
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
+        // Inside setupUI()
         addWindowListener(new WindowAdapter() {
             @Override
-            public void windowClosing(WindowEvent e) { handleExitRequest(); }
+            public void windowClosing(WindowEvent e) {
+                // This is the OS "X" button
+                int response = JOptionPane.showConfirmDialog(
+                        null, "Exit PaLO entirely?", "Confirm Exit",
+                        JOptionPane.YES_NO_OPTION);
+
+                if (response == JOptionPane.YES_OPTION) {
+                    saveProgress();
+                    System.exit(0); // This closes the app entirely
+                }
+            }
         });
 
         setLayout(new BorderLayout(20, 0));
         getContentPane().setBackground(new Color(28, 28, 28));
 
-        // --- INITIALIZE COMPONENTS ---
+        // --- INITIALIZE SIDEBAR COMPONENTS ---
         aiStatusLabel = new JLabel("Ready", SwingConstants.CENTER);
         aiStatusLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        aiStatusLabel.setForeground(Color.GRAY);
 
         difficultyLabel = new JLabel("Question #1 | Current Level: EASY", SwingConstants.CENTER);
-        difficultyLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+        difficultyLabel.setFont(new Font("Segoe UI", Font.BOLD, 18));
         difficultyLabel.setForeground(new Color(230, 126, 34));
 
-        timerLabel = new JLabel("00s", SwingConstants.CENTER);
-        timerLabel.setFont(new Font("Monospaced", Font.BOLD, 42));
-        timerLabel.setForeground(new Color(231, 76, 60));
-        timerLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        timerLabel.setPreferredSize(new Dimension(250, 60));
-        timerLabel.setMaximumSize(new Dimension(250, 60));
+        // Initialize New Circular Timer (Clock Button)
+        clockTimer = new CircularTimer();
+        clockTimer.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         circleMastery = new CircleMasteryPanel();
         circleMastery.setBackground(new Color(35, 35, 35));
@@ -446,52 +700,70 @@ public class OfflineTutorApp extends JFrame {
         sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
         sidebar.setPreferredSize(new Dimension(280, 800));
         sidebar.setBackground(new Color(35, 35, 35));
-        sidebar.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 10));
+        sidebar.setBorder(BorderFactory.createEmptyBorder(30, 15, 30, 15));
 
         addSidebarSection(sidebar, "OVERALL MASTERY", circleMastery);
         sidebar.add(Box.createRigidArea(new Dimension(0, 40)));
-        addSidebarSection(sidebar, "TIME REMAINING", timerLabel);
+
+        // Replacing old timer text with Interactive Clock
+        addSidebarSection(sidebar, "SET DURATION", clockTimer);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 15)));
+
+        // New Minimalist Quit Quiz Button
+        JButton btnQuit = createQuitQuizButton();
+        btnQuit.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnQuit.setMaximumSize(new Dimension(240, 45));
+        sidebar.add(btnQuit);
+
         sidebar.add(Box.createRigidArea(new Dimension(0, 40)));
 
         subjectDropdown = new JComboBox<>(new String[]{"Physics", "Computer Science", "Biology", "General"});
-        subjectDropdown.setMaximumSize(new Dimension(220, 35));
+        subjectDropdown.setMaximumSize(new Dimension(240, 35));
         addSidebarSection(sidebar, "SUBJECT", subjectDropdown);
-
-        timerDropdown = new JComboBox<>(new String[]{"No Timer", "15 Seconds", "30 Seconds", "60 Seconds"});
-        timerDropdown.setMaximumSize(new Dimension(220, 35));
-        addSidebarSection(sidebar, "TIME LIMIT", timerDropdown);
 
         sidebar.add(Box.createVerticalGlue());
         sidebar.add(aiStatusLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 15)));
 
         JButton btnScan = new JButton("SCAN TEXTBOOK");
         btnScan.setAlignmentX(Component.CENTER_ALIGNMENT);
-        btnScan.setMaximumSize(new Dimension(220, 45));
+        btnScan.setMaximumSize(new Dimension(240, 50));
+        btnScan.setFont(new Font("Segoe UI Bold", Font.PLAIN, 14));
         btnScan.setBackground(new Color(52, 152, 219));
         btnScan.setForeground(Color.WHITE);
         btnScan.addActionListener(e -> performScan());
-        sidebar.add(Box.createRigidArea(new Dimension(0, 10)));
         sidebar.add(btnScan);
 
-        // --- QUIZ CONTENT ---
+        // --- QUIZ CONTENT (CENTER) ---
         JPanel quizContent = new JPanel(new BorderLayout(20, 20));
         quizContent.setOpaque(false);
         quizContent.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 30));
 
         questionArea = new JTextArea();
-        questionArea.setFont(new Font("Segoe UI", Font.PLAIN, 24));
+        questionArea.setFont(new Font("Segoe UI", Font.PLAIN, 26));
         questionArea.setLineWrap(true);
         questionArea.setWrapStyleWord(true);
         questionArea.setBackground(new Color(40, 40, 40));
         questionArea.setForeground(Color.WHITE);
+        questionArea.setEditable(false);
+        questionArea.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
         JScrollPane qScroll = new JScrollPane(questionArea);
+        qScroll.getViewport().setOpaque(false);
+        qScroll.setOpaque(false);
         qScroll.setBorder(BorderFactory.createLineBorder(new Color(60, 60, 60), 2));
 
-        JPanel btnGrid = new JPanel(new GridLayout(2, 2, 15, 15));
+        JPanel btnGrid = new JPanel(new GridLayout(2, 2, 25, 25));
         btnGrid.setOpaque(false);
-        btnA = createOptionButton("A"); btnB = createOptionButton("B");
-        btnC = createOptionButton("C"); btnD = createOptionButton("D");
-        btnGrid.add(btnA); btnGrid.add(btnB); btnGrid.add(btnC); btnGrid.add(btnGrid.add(btnD));
+
+        // Pure, Highlighted minimalist colors as requested
+        btnA = createOptionButton("A", new Color(0, 220, 255));   // Electric Cyan
+        btnB = createOptionButton("B", new Color(255, 45, 85));   // Vibrant Rose
+        btnC = createOptionButton("C", new Color(50, 255, 120));  // Spring Green
+        btnD = createOptionButton("D", new Color(255, 200, 0));   // Cyber Yellow
+
+        btnGrid.add(btnA); btnGrid.add(btnB);
+        btnGrid.add(btnC); btnGrid.add(btnD);
 
         quizContent.add(difficultyLabel, BorderLayout.NORTH);
         quizContent.add(qScroll, BorderLayout.CENTER);
@@ -538,28 +810,19 @@ public class OfflineTutorApp extends JFrame {
     }
 
     private void startNewTimer() {
-        if (userSelectedTime <= 0) {
-            timerLabel.setText("Off");
-            return;
-        }
-
-        if (quizTimer != null && quizTimer.isRunning()) {
-            quizTimer.stop();
-        }
+        if (userSelectedTime <= 0) return;
+        if (quizTimer != null) quizTimer.stop();
 
         secondsRemaining = userSelectedTime;
-        timerLabel.setText(secondsRemaining + "s"); // Shorter text to prevent "..."
+        clockTimer.setRunning(true); // Disable manual dragging during quiz
 
         quizTimer = new javax.swing.Timer(1000, e -> {
             secondsRemaining--;
-            timerLabel.setText(secondsRemaining + "s");
-
-            if (secondsRemaining <= 5) {
-                timerLabel.setForeground(Color.YELLOW);
-            }
+            clockTimer.setSeconds(secondsRemaining);
 
             if (secondsRemaining <= 0) {
                 quizTimer.stop();
+                clockTimer.setRunning(false);
                 handleTimeout();
             }
         });
@@ -571,12 +834,64 @@ public class OfflineTutorApp extends JFrame {
         checkAnswer("TIMEOUT");
     }
 
-    private JButton createOptionButton(String text) {
-        JButton btn = new JButton(text);
-        btn.setFont(new Font("Segoe UI", Font.PLAIN, 16));
+    private JButton createOptionButton(String text, Color fallbackColor) {
+        JButton btn = new JButton(text) {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+                // THEME REACTIVE LOGIC:
+                // If hovered, use the global currentAccentColor from settings
+                if (getModel().isRollover()) {
+                    g2.setColor(currentAccentColor);
+                } else {
+                    // Idle state: Minimalist dark glass
+                    g2.setColor(new Color(30, 30, 30, 150));
+                }
+
+                // Draw the smooth minimalist block
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
+
+                super.paintComponent(g);
+                g2.dispose();
+            }
+        };
+
+        // --- MINIMALIST STYLING ---
+        btn.setFont(new Font("Segoe UI Black", Font.PLAIN, 24));
+        btn.setForeground(Color.WHITE);
+        btn.setPreferredSize(new Dimension(0, 100));
+        btn.setFocusPainted(false);
+        btn.setBorderPainted(false);
+        btn.setContentAreaFilled(false);
+        btn.setOpaque(false);
+        btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+        // --- DYNAMIC TEXT CONTRAST ---
+        btn.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseEntered(java.awt.event.MouseEvent e) {
+                // Check if the NEW global theme color is bright
+                if (isColorBright(currentAccentColor)) {
+                    btn.setForeground(Color.BLACK);
+                }
+            }
+            @Override
+            public void mouseExited(java.awt.event.MouseEvent e) {
+                btn.setForeground(Color.WHITE);
+            }
+        });
+
         btn.addActionListener(e -> checkAnswer(btn.getText()));
         btn.setEnabled(false);
         return btn;
+    }
+
+    // Helper to determine if text should be black or white for best minimalist contrast
+    private boolean isColorBright(Color c) {
+        double luminance = (0.299 * c.getRed() + 0.587 * c.getGreen() + 0.114 * c.getBlue()) / 255;
+        return luminance > 0.6;
     }
 
     // --- LOGIC: CHECK ANSWER ---
@@ -787,11 +1102,11 @@ public class OfflineTutorApp extends JFrame {
         selectedSubject = (String) subjectDropdown.getSelectedItem();
         currentBannedTopics = SUBJECT_BAN_LISTS.get(selectedSubject);
 
-        String timeChoice = (String) timerDropdown.getSelectedItem();
-        if (timeChoice != null && !timeChoice.equals("No Timer")) {
-            userSelectedTime = Integer.parseInt(timeChoice.split(" ")[0]);
-        } else {
-            userSelectedTime = 0;
+        // NEW LOGIC: Time is now set via the CircularTimer interaction, not a dropdown.
+        // userSelectedTime is updated automatically when you drag the clock.
+        if (userSelectedTime <= 0) {
+            // Optional: Default to a specific time if user didn't drag the clock
+            // userSelectedTime = 60;
         }
 
         // 2. Open File Chooser
@@ -826,10 +1141,16 @@ public class OfflineTutorApp extends JFrame {
                     SwingUtilities.invokeLater(() -> {
                         if (easyQuestions.isEmpty() && hardQuestions.isEmpty()) {
                             aiStatusLabel.setText("No valid topics found on this page.");
-                            JOptionPane.showMessageDialog(this, "The AI couldn't find enough clear text to generate questions. Please try a clearer scan.");
+                            JOptionPane.showMessageDialog(this, "The AI couldn't find enough text. Please try a clearer scan.");
                         } else {
                             aiStatusLabel.setText("Scan Complete!");
-                            loadNextQuestion(true); // Start the quiz
+
+                            // SYNC THE CLOCK: Ensure the visual clock matches the selected time
+                            clockTimer.setSeconds(userSelectedTime);
+
+                            // START THE QUIZ & TIMER
+                            loadNextQuestion(true);
+                            startNewTimer();
                         }
                     });
                 } catch (Exception ex) {
@@ -837,6 +1158,34 @@ public class OfflineTutorApp extends JFrame {
                     SwingUtilities.invokeLater(() -> aiStatusLabel.setText("Error: " + ex.getMessage()));
                 }
             }).start();
+        }
+    }
+
+    private void playZenMusic() {
+        new Thread(() -> {
+            try {
+                // Ensure you have a .wav file in your project folder
+                File musicPath = new File("assets/lofi_beats.wav");
+                if (!musicPath.exists()) {
+                    System.out.println("Music file not found at: " + musicPath.getAbsolutePath());
+                    return;
+                }
+
+                AudioInputStream audioInput = AudioSystem.getAudioInputStream(musicPath);
+                zenClip = AudioSystem.getClip();
+                zenClip.open(audioInput);
+                zenClip.loop(Clip.LOOP_CONTINUOUSLY); // Continuous play
+                zenClip.start();
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        }).start();
+    }
+
+    private void stopZenMusic() {
+        if (zenClip != null && zenClip.isRunning()) {
+            zenClip.stop();
+            zenClip.close();
         }
     }
 
@@ -1067,19 +1416,25 @@ public class OfflineTutorApp extends JFrame {
         private Color accent;
         private float alpha = 0.2f;
 
-        public ModernMenuButton(String htmlText, Color accent) {
-            super("<html><center>" + htmlText + "</center></html>");
-            this.accent = accent;
+        public ModernMenuButton(String html, Color c) {
+            super("<html><center>" + html + "</center></html>");
+            this.accent = c;
             setForeground(Color.WHITE);
-            setFont(new Font("Segoe UI Semibold", Font.PLAIN, 15));
+            setFont(new Font("Segoe UI Semibold", Font.PLAIN, 16));
             setContentAreaFilled(false);
             setFocusPainted(false);
             setCursor(new Cursor(Cursor.HAND_CURSOR));
             setBorder(BorderFactory.createLineBorder(new Color(255, 255, 255, 40)));
 
             addMouseListener(new java.awt.event.MouseAdapter() {
-                public void mouseEntered(java.awt.event.MouseEvent e) { alpha = 0.7f; repaint(); }
-                public void mouseExited(java.awt.event.MouseEvent e) { alpha = 0.2f; repaint(); }
+                public void mouseEntered(java.awt.event.MouseEvent e) {
+                    alpha = 0.7f; // Glow effect on hover
+                    repaint();
+                }
+                public void mouseExited(java.awt.event.MouseEvent e) {
+                    alpha = 0.2f; // Fade out
+                    repaint();
+                }
             });
         }
 
@@ -1087,9 +1442,15 @@ public class OfflineTutorApp extends JFrame {
         protected void paintComponent(Graphics g) {
             Graphics2D g2 = (Graphics2D) g.create();
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            // Draws the glowing round background
-            g2.setColor(new Color(accent.getRed(), accent.getGreen(), accent.getBlue(), (int)(alpha * 255)));
+
+            // CHANGE: Instead of using 'this.accent', we use 'currentAccentColor'
+            // We only use the accent if it's NOT a themed button,
+            // but for your minimalist look, use the global one:
+            Color drawColor = getModel().isRollover() ? currentAccentColor : new Color(255, 255, 255, 40);
+
+            g2.setColor(drawColor);
             g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
+
             super.paintComponent(g);
             g2.dispose();
         }
@@ -1144,23 +1505,21 @@ public class OfflineTutorApp extends JFrame {
         public PaLOHomePage(Frame owner) {
             super(owner, true);
             setUndecorated(true);
-            setSize(1200, 750); // Slightly wider for graph room
+            setSize(1350, 850); // Increased for a spacious, professional feel
             setLocationRelativeTo(null);
 
-            // CUSTOM BACKGROUND (ensure path matches your project)
+            // Custom Background Support
             BackgroundPanel bgPanel = new BackgroundPanel("assets/homepage_bg.jpg");
             bgPanel.setLayout(new BorderLayout());
 
-            // --- TOP SECTION: WELCOME & QUIT ---
+            // --- TOPBAR: Welcome & Quit ---
             JPanel topBar = new JPanel(new BorderLayout());
             topBar.setOpaque(false);
-            topBar.setBorder(BorderFactory.createEmptyBorder(40, 50, 0, 50));
+            topBar.setBorder(BorderFactory.createEmptyBorder(50, 60, 0, 60));
 
-            // Welcome Text (Top Left)
-            JLabel welcome = new JLabel("<html><font color='#888888'>WELCOME BACK,</font><br>" +
-                    "<font size='7' color='white'><b>SCHOLAR</b></font></html>");
+            JLabel welcome = new JLabel("<html><font color='#888888' size='5'>WELCOME BACK,</font><br>" +
+                    "<font size='14' color='white'><b>THUSHAR</b></font></html>");
 
-            // Quit Button (Top Right)
             JButton quitBtn = new JButton("✕ QUIT");
             quitBtn.setFont(new Font("Segoe UI", Font.BOLD, 14));
             quitBtn.setForeground(Color.WHITE);
@@ -1172,63 +1531,112 @@ public class OfflineTutorApp extends JFrame {
             topBar.add(welcome, BorderLayout.WEST);
             topBar.add(quitBtn, BorderLayout.EAST);
 
-            // --- CENTER SECTION: ANIMATED GRAPH ---
-            JPanel centerArea = new JPanel(new BorderLayout(20, 20));
+            // --- CENTER AREA: Split Layout (Text Left, Graph Right) ---
+            JPanel centerArea = new JPanel(new GridBagLayout());
             centerArea.setOpaque(false);
-            centerArea.setBorder(BorderFactory.createEmptyBorder(40, 50, 40, 50));
+            GridBagConstraints gbc = new GridBagConstraints();
 
+            // Left Side: Mastery Message
+            JLabel masteryMsg = new JLabel("<html><body style='width: 350px;'>" + getMasteryMessage() + "</body></html>");
+            masteryMsg.setFont(new Font("Segoe UI Light", Font.ITALIC, 26));
+            masteryMsg.setForeground(new Color(220, 220, 220));
+            gbc.gridx = 0;
+            gbc.weightx = 0.4;
+            gbc.anchor = GridBagConstraints.WEST;
+            gbc.insets = new Insets(0, 60, 0, 0);
+            centerArea.add(masteryMsg, gbc);
+
+            // Right Side: Animated Graph
             ProgressGraphPanel graph = new ProgressGraphPanel();
             graph.setOpaque(false);
+            graph.setPreferredSize(new Dimension(650, 400));
+            gbc.gridx = 1;
+            gbc.weightx = 0.6;
+            gbc.fill = GridBagConstraints.BOTH;
+            gbc.insets = new Insets(0, 20, 0, 60);
+            centerArea.add(graph, gbc);
 
-            JLabel masteryMsg = new JLabel(getMasteryMessage());
-            masteryMsg.setFont(new Font("Segoe UI Light", Font.ITALIC, 22));
-            masteryMsg.setForeground(new Color(200, 200, 200));
-
-            centerArea.add(graph, BorderLayout.CENTER);
-            centerArea.add(masteryMsg, BorderLayout.SOUTH);
-
-            // --- BOTTOM SECTION: NAVIGATION ---
+            // --- BOTTOMBAR: Four Button Hub ---
             JPanel bottomBar = new JPanel(new BorderLayout());
             bottomBar.setOpaque(false);
-            bottomBar.setBorder(BorderFactory.createEmptyBorder(0, 50, 50, 50));
+            bottomBar.setBorder(BorderFactory.createEmptyBorder(0, 60, 60, 60));
 
-            // Bottom Left: Audio Mode
-            ModernMenuButton btnAudio = new ModernMenuButton("🔊 Audio assisted mode", new Color(52, 152, 219));
-            btnAudio.addActionListener(e -> { isAudioMode = true; dispose(); });
+            // GROUP 1: Utilities (Left)
+            JPanel utilityGroup = new JPanel(new FlowLayout(FlowLayout.LEFT, 20, 0));
+            utilityGroup.setOpaque(false);
 
-            // Bottom Right: Offline & Online
-            JPanel rightGroup = new JPanel(new FlowLayout(FlowLayout.RIGHT, 25, 0));
-            rightGroup.setOpaque(false);
+            // Settings Button - Cyber Yellow
+            ModernMenuButton btnSettings = new ModernMenuButton("⚙️ SETTINGS", new Color(255, 200, 0));
+            btnSettings.addActionListener(e -> openSettings());
 
-            ModernMenuButton btnOffline = new ModernMenuButton("Lets study<br>offline with PAL", new Color(46, 204, 113));
-            ModernMenuButton btnOnline = new ModernMenuButton("Go online<br>for extensive learning", new Color(149, 165, 166));
+            // Deep Focus Button - Yeolpumta Violet
+            ModernMenuButton btnFocus = new ModernMenuButton("🔥 DEEP FOCUS", new Color(155, 89, 182));
+            btnFocus.addActionListener(e -> launchDeepFocusMode());
+
+            utilityGroup.add(btnSettings);
+            utilityGroup.add(btnFocus);
+
+            // GROUP 2: Study Modes (Right)
+            JPanel studyGroup = new JPanel(new FlowLayout(FlowLayout.RIGHT, 20, 0));
+            studyGroup.setOpaque(false);
+
+            ModernMenuButton btnOffline = new ModernMenuButton("📄 OFFLINE STUDY", new Color(46, 204, 113));
+            ModernMenuButton btnAudio = new ModernMenuButton("🔊 AUDIO MODE", new Color(52, 152, 219));
 
             btnOffline.addActionListener(e -> { isAudioMode = false; dispose(); });
-            btnOnline.setEnabled(false); // Locked feature
+            btnAudio.addActionListener(e -> { isAudioMode = true; dispose(); });
 
-            rightGroup.add(btnOffline);
-            rightGroup.add(btnOnline);
+            studyGroup.add(btnOffline);
+            studyGroup.add(btnAudio);
 
-            bottomBar.add(btnAudio, BorderLayout.WEST);
-            bottomBar.add(rightGroup, BorderLayout.EAST);
+            bottomBar.add(utilityGroup, BorderLayout.WEST);
+            bottomBar.add(studyGroup, BorderLayout.EAST);
 
+            // Assemble Page
             bgPanel.add(topBar, BorderLayout.NORTH);
             bgPanel.add(centerArea, BorderLayout.CENTER);
             bgPanel.add(bottomBar, BorderLayout.SOUTH);
 
             add(bgPanel);
 
-            // Trigger Animation
+            // Trigger the graph drawing animation
             SwingUtilities.invokeLater(graph::startAnimation);
         }
 
         private String getMasteryMessage() {
-            if (studentHistory.isEmpty()) return "Analyze your first page to track progress!";
+            if (studentHistory.isEmpty()) return "Ready to begin your journey? Analyze a page to track your progress.";
             float avg = 0;
             for(float f : studentHistory) avg += f;
             avg /= studentHistory.size();
-            return (avg > 0.7) ? "Your logic skills are sharp. Keep it up!" : "Consistency is key. Focus on the difficult topics.";
+            return (avg > 0.7) ? "Your performance is elite. Keep the momentum!" : "Consistency is key. Focus on the difficult topics.";
         }
+    }
+
+    private JButton createAestheticButton(String text, Color accent) {
+        JButton btn = new JButton(text);
+        btn.setFont(new Font("Segoe UI Semibold", Font.PLAIN, 16));
+        btn.setForeground(Color.WHITE);
+        btn.setBackground(new Color(40, 40, 40, 180)); // Default semi-transparent dark
+        btn.setOpaque(false);
+        btn.setBorder(BorderFactory.createLineBorder(new Color(255, 255, 255, 50)));
+
+        btn.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseEntered(java.awt.event.MouseEvent e) {
+                // Animation: Light up with color
+                btn.setBackground(accent);
+                btn.setOpaque(true);
+                btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            }
+
+            @Override
+            public void mouseExited(java.awt.event.MouseEvent e) {
+                // Return to subtle glass look
+                btn.setBackground(new Color(40, 40, 40, 180));
+                btn.setOpaque(false);
+            }
+        });
+        return btn;
     }
 
     private void initAI() {
@@ -1238,6 +1646,306 @@ public class OfflineTutorApp extends JFrame {
             model.load(modelPath);
             this.predictor = model.newPredictor(new TutorTranslator());
         } catch (Exception e) {}
+    }
+
+    private void launchDeepFocusMode() {
+        JDialog focusDialog = new JDialog(this, true);
+        focusDialog.setUndecorated(true);
+        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
+        focusDialog.setBounds(0, 0, screen.width, screen.height);
+
+        BackgroundPanel focusBG = new BackgroundPanel("assets/focus_bg.jpg");
+        focusBG.setLayout(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(15, 15, 15, 15);
+
+        // Title
+        JLabel title = new JLabel("SELECT YOUR FOCUS PATH");
+        title.setFont(new Font("Segoe UI Black", Font.BOLD, 36));
+        title.setForeground(Color.WHITE);
+        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 2;
+        focusBG.add(title, gbc);
+
+        // --- TECHNIQUE BUTTONS ---
+        gbc.gridwidth = 1;
+
+        // 1. Pomodoro
+        JButton pBtn = createTechniqueButton("POMODORO", "25m Work • 5m Rest", new Color(255, 45, 85));
+        pBtn.addActionListener(e -> startFocusSession(focusDialog, 25, 5));
+        gbc.gridy = 1; gbc.gridx = 0; focusBG.add(pBtn, gbc);
+
+        // 2. Flow State
+        JButton fBtn = createTechniqueButton("FLOW STATE", "90m Deep Work • 15m Rest", new Color(0, 220, 255));
+        fBtn.addActionListener(e -> startFocusSession(focusDialog, 90, 15));
+        gbc.gridx = 1; focusBG.add(fBtn, gbc);
+
+        // 3. Rule of 52/17
+        JButton rBtn = createTechniqueButton("52 / 17 RULE", "Science-backed Productivity", new Color(46, 204, 113));
+        rBtn.addActionListener(e -> startFocusSession(focusDialog, 52, 17));
+        gbc.gridy = 2; gbc.gridx = 0; focusBG.add(rBtn, gbc);
+
+        // 4. Custom Zen
+        JButton cBtn = createTechniqueButton("CUSTOM ZEN", "Set your own intervals", new Color(255, 200, 0));
+        cBtn.addActionListener(e -> {
+            // Show input dialogs for custom time
+            String work = JOptionPane.showInputDialog("Work Minutes:");
+            String rest = JOptionPane.showInputDialog("Rest Minutes:");
+            try {
+                startFocusSession(focusDialog, Integer.parseInt(work), Integer.parseInt(rest));
+            } catch(Exception ex) {}
+        });
+        gbc.gridx = 1; focusBG.add(cBtn, gbc);
+
+        // Exit Button
+        JButton back = new JButton("BACK TO MENU");
+        back.setForeground(Color.GRAY);
+        back.setContentAreaFilled(false);
+        back.addActionListener(e -> focusDialog.dispose());
+        gbc.gridy = 3; gbc.gridx = 0; gbc.gridwidth = 2;
+        focusBG.add(back, gbc);
+
+        focusDialog.add(focusBG);
+        focusDialog.setVisible(true);
+    }
+
+    private void startFocusSession(JDialog dialog, int workMins, int restMins) {
+        dialog.getContentPane().removeAll();
+
+        BackgroundPanel sessionBG = new BackgroundPanel("assets/focus_bg.jpg");
+        sessionBG.setLayout(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+
+        // 1. Status Label
+        JLabel statusLabel = new JLabel("FOCUSING...");
+        statusLabel.setFont(new Font("Segoe UI Black", Font.BOLD, 32));
+        statusLabel.setForeground(currentAccentColor);
+        gbc.gridx = 0; gbc.gridy = 0;
+        sessionBG.add(statusLabel, gbc);
+
+        // 2. The Clock
+        CircularTimer timer = new CircularTimer();
+        timer.setPreferredSize(new Dimension(450, 450));
+        timer.setSeconds(workMins * 60);
+        timer.setRunning(true);
+        gbc.gridy = 1; gbc.insets = new Insets(30, 0, 30, 0);
+        sessionBG.add(timer, gbc);
+
+        // 3. Lo-Fi Toggle
+        ModernToggle musicToggle = new ModernToggle("LO-FI MODE");
+        musicToggle.addActionListener(e -> {
+            musicToggle.toggle();
+            if(musicToggle.isActive()) playZenMusic(); else stopZenMusic();
+        });
+        gbc.gridy = 2; gbc.insets = new Insets(0, 0, 0, 0);
+        sessionBG.add(musicToggle, gbc);
+
+        // 4. Session Manager Logic
+        // This background timer updates every second to check if work is done
+        javax.swing.Timer workManager = new javax.swing.Timer(1000, null);
+        workManager.addActionListener(e -> {
+            int currentSecs = timer.getSeconds();
+            if (currentSecs > 0) {
+                timer.setSeconds(currentSecs - 1);
+            } else {
+                workManager.stop();
+                stopZenMusic();
+                triggerRestMode(dialog, restMins);
+            }
+        });
+        workManager.start();
+
+        dialog.add(sessionBG);
+        dialog.revalidate();
+        dialog.repaint();
+    }
+
+    private void playNotificationBell() {
+        new Thread(() -> {
+            try {
+                File bellPath = new File("assets/notification_bell.wav");
+                if (bellPath.exists()) {
+                    AudioInputStream audioInput = AudioSystem.getAudioInputStream(bellPath);
+                    Clip bellClip = AudioSystem.getClip();
+                    bellClip.open(audioInput);
+                    bellClip.start();
+                }
+            } catch (Exception ex) {
+                System.out.println("Audio Error: " + ex.getMessage());
+            }
+        }).start();
+    }
+
+    private void triggerRestMode(JDialog dialog, int restMins) {
+        dialog.getContentPane().removeAll();
+
+        // Use a different, calmer background for rest if available
+        BackgroundPanel restBG = new BackgroundPanel("assets/rest_bg.jpg");
+        restBG.setLayout(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+
+        // 1. Rest Title
+        JLabel restLabel = new JLabel("TIME TO RELAX");
+        restLabel.setFont(new Font("Segoe UI Black", Font.BOLD, 32));
+        restLabel.setForeground(new Color(46, 204, 113)); // Minimalist Green
+        gbc.gridx = 0; gbc.gridy = 0;
+        restBG.add(restLabel, gbc);
+
+        // 2. The Rest Clock
+        CircularTimer restTimer = new CircularTimer();
+        restTimer.setPreferredSize(new Dimension(400, 400));
+        restTimer.setSeconds(restMins * 60);
+        restTimer.setRunning(true);
+        // Temporarily override the theme color for the rest clock
+        // Note: You might need to add a setColor method to CircularTimer for this
+        gbc.gridy = 1; gbc.insets = new Insets(30, 0, 30, 0);
+        restBG.add(restTimer, gbc);
+
+        // 3. Finish/Back Button
+        JButton btnExit = new JButton("FINISH SESSION") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(getModel().isRollover() ? new Color(46, 204, 113) : new Color(255, 255, 255, 30));
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
+                super.paintComponent(g);
+                g2.dispose();
+            }
+        };
+        btnExit.setFont(new Font("Segoe UI Bold", Font.PLAIN, 14));
+        btnExit.setForeground(Color.WHITE);
+        btnExit.setPreferredSize(new Dimension(200, 50));
+        btnExit.setContentAreaFilled(false);
+        btnExit.setBorderPainted(false);
+        btnExit.addActionListener(e -> dialog.dispose());
+
+        gbc.gridy = 2;
+        restBG.add(btnExit, gbc);
+
+        // 4. Break Manager Logic
+        javax.swing.Timer breakManager = new javax.swing.Timer(1000, null);
+        breakManager.addActionListener(e -> {
+            int currentSecs = restTimer.getSeconds();
+            if (currentSecs > 0) {
+                restTimer.setSeconds(currentSecs - 1);
+            } else {
+                breakManager.stop();
+                restLabel.setText("BREAK OVER!");
+            }
+        });
+        breakManager.start();
+
+        dialog.add(restBG);
+        dialog.revalidate();
+        dialog.repaint();
+    }
+
+    private JButton createModernToggle(String text) {
+        JButton toggle = new JButton(text + ": OFF") {
+            private boolean active = false;
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+                // Background of the switch
+                g2.setColor(active ? currentAccentColor : new Color(255, 255, 255, 30));
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 25, 25);
+
+                // The "Sliding" knob indicator
+                g2.setColor(Color.WHITE);
+                int knobSize = getHeight() - 10;
+                int x = active ? (getWidth() - knobSize - 5) : 5;
+                g2.fillOval(x, 5, knobSize, knobSize);
+
+                super.paintComponent(g);
+                g2.dispose();
+            }
+
+            public boolean isActive() { return active; }
+            public void toggle() {
+                active = !active;
+                setText(text + (active ? ": ON" : ": OFF"));
+                repaint();
+            }
+        };
+
+        toggle.setFont(new Font("Segoe UI Bold", Font.PLAIN, 12));
+        toggle.setForeground(Color.WHITE);
+        toggle.setPreferredSize(new Dimension(140, 40));
+        toggle.setContentAreaFilled(false);
+        toggle.setBorderPainted(false);
+        toggle.setFocusPainted(false);
+        toggle.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+        toggle.addActionListener(e -> ((JButton)e.getSource()).getParent().repaint()); // Trigger redraw
+        return toggle;
+    }
+
+
+
+    // Add this to your class fields
+    private Color currentAccentColor = new Color(0, 220, 255); // Default Electric Cyan
+
+    private Map<String, Color[]> getThemes() {
+        Map<String, Color[]> themes = new HashMap<>();
+        // Format: { Primary Accent, Hover/Secondary }
+        themes.put("Spider-Verse Red", new Color[]{new Color(231, 76, 60), new Color(255, 45, 85)});
+        themes.put("Deep Sea Blue", new Color[]{new Color(0, 220, 255), new Color(52, 152, 219)});
+        themes.put("Emerald Forest", new Color[]{new Color(50, 255, 120), new Color(46, 204, 113)});
+        return themes;
+    }
+
+    private JButton createTechniqueButton(String title, String subtitle, Color theme) {
+        JButton btn = new JButton("<html><center><b>" + title + "</b><br>" +
+                "<font size='3' color='#BBBBBB'>" + subtitle + "</font></center></html>") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+                // Highlight with theme color on hover, otherwise dark glass
+                g2.setColor(getModel().isRollover() ? theme : new Color(255, 255, 255, 20));
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
+
+                super.paintComponent(g);
+                g2.dispose();
+            }
+        };
+        btn.setFont(new Font("Segoe UI", Font.PLAIN, 18));
+        btn.setForeground(Color.WHITE);
+        btn.setPreferredSize(new Dimension(280, 100));
+        btn.setContentAreaFilled(false);
+        btn.setBorderPainted(false);
+        btn.setFocusPainted(false);
+        btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        return btn;
+    }
+
+    private void openSettings() {
+        JPanel panel = new JPanel(new GridLayout(0, 1, 15, 15));
+        panel.setBackground(new Color(40, 40, 40));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
+        JLabel label = new JLabel("SELECT GLOBAL THEME");
+        label.setForeground(Color.WHITE);
+        label.setFont(new Font("Segoe UI Bold", Font.PLAIN, 14));
+
+        Map<String, Color[]> themes = getThemes();
+        JComboBox<String> themeBox = new JComboBox<>(themes.keySet().toArray(new String[0]));
+
+        themeBox.addActionListener(e -> {
+            String selected = (String) themeBox.getSelectedItem();
+            // Inside your themeBox ActionListener
+            currentAccentColor = themes.get(selected)[0];
+            SwingUtilities.updateComponentTreeUI(this); // Forces the entire window to refresh colors
+            this.repaint();
+        });
+
+        panel.add(label);
+        panel.add(themeBox);
+
+        JOptionPane.showMessageDialog(this, panel, "Settings", JOptionPane.PLAIN_MESSAGE);
     }
 
     private static class TutorTranslator implements Translator<float[], Float> {
