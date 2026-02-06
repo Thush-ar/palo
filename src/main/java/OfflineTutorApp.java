@@ -14,7 +14,6 @@ import opennlp.tools.tokenize.TokenizerModel;
 import javax.swing.table.DefaultTableModel;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
-import java.awt.geom.Arc2D;
 import java.awt.geom.Path2D;
 import java.awt.RenderingHints;
 import java.awt.GradientPaint;
@@ -32,7 +31,6 @@ import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.awt.image.BufferedImage;
-import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.nio.file.Path;
@@ -46,26 +44,49 @@ import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
 import java.util.Arrays;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 public class OfflineTutorApp extends JFrame {
 
 
     // --- GUI Components ---
+
     private JComboBox<String> subjectDropdown;
     private JComboBox<String> timerDropdown;
     private JTextArea questionArea;
     private JLabel aiStatusLabel;
     private JLabel difficultyLabel;
     private JProgressBar masteryBar;
-    private JButton btnA, btnB, btnC, btnD;
+    private QuizOptionButton btnA, btnB, btnC, btnD;
     private JLabel imageViewer;
     private Clip zenClip; // Stores the audio stream for lo-fi beats
+
+    // Chat UI components
+    private JTextArea chatArea;
+    private JTextField chatInput;
+    private JButton sendButton;
+
+    // --- Integrated UI Components ---
+    private JPanel mainCardPanel;
+    private CardLayout cardLayout;
+    private JPanel quizPanel;
+    private JPanel chatPanel;
+    private JPanel audioPanel;
+    private JPanel currentPanel;
 
     // --- Logic & Data ---
     private Predictor<float[], Float> predictor;
     private List<Float> studentHistory = new ArrayList<>();
+    // Logic & Data
+    private String currentLevel = "EASY";
     private List<QuizItem> easyQuestions = new ArrayList<>();
+    private List<QuizItem> easyMediumQuestions = new ArrayList<>();
+    private List<QuizItem> mediumQuestions = new ArrayList<>();
+    private List<QuizItem> mediumHardQuestions = new ArrayList<>();
     private List<QuizItem> hardQuestions = new ArrayList<>();
+    private List<QuizItem> expertQuestions = new ArrayList<>(); // "Really Hard"
     private Set<String> askedQuestionIDs = new HashSet<>();
     private List<QuizItem> sessionLog = new ArrayList<>();
     private QuizItem currentQuestion;
@@ -114,6 +135,119 @@ public class OfflineTutorApp extends JFrame {
         }
     }
 
+    // Lightweight wrapper around JButton to keep option-specific styling and feedback
+    private class QuizOptionButton extends JButton {
+        private final Color themeColor;
+        private boolean isBlinking = false;
+        private Color currentFeedbackColor = null;
+
+        public QuizOptionButton(String text, Color themeColor) {
+            super(text);
+            this.themeColor = themeColor;
+
+            // Basic properties
+            setForeground(Color.WHITE);
+            setPreferredSize(new Dimension(0, 110));
+            setFocusPainted(false);
+            setBorderPainted(false);
+            setContentAreaFilled(false);
+            setOpaque(false);
+            setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+            // Initial text formatting
+            updateTextAndFont(text);
+
+            addActionListener(e -> checkAnswer(this));
+        }
+
+        /**
+         * Accommodates long text by using HTML for wrapping and
+         * dynamic font sizing based on character count.
+         */
+        private void updateTextAndFont(String text) {
+            int fontSize = 22; // Default
+            if (text.length() > 80) fontSize = 14;
+            else if (text.length() > 40) fontSize = 17;
+
+            // Using HTML to force multi-line wrapping inside the button
+            String htmlText = "<html><body style='width: 250px; text-align: center; " +
+                    "font-family: Segoe UI Semibold; font-size: " + fontSize + "pt;'>" +
+                    text + "</body></html>";
+            super.setText(htmlText);
+        }
+
+        @Override
+        public void setText(String text) {
+            updateTextAndFont(text);
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            // Determine Background Color
+            if (currentFeedbackColor != null) {
+                // Success Glow or Blink State
+                g2.setColor(isBlinking ? new Color(30, 30, 30, 180) : currentFeedbackColor);
+            } else if (getModel().isRollover()) {
+                g2.setColor(new Color(themeColor.getRed(), themeColor.getGreen(), themeColor.getBlue(), 120));
+            } else {
+                g2.setColor(new Color(30, 30, 30, 150));
+            }
+
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
+
+            // Border
+            g2.setColor(Color.WHITE);
+            g2.setStroke(new BasicStroke(1.5f));
+            g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 20, 20);
+
+            super.paintComponent(g);
+            g2.dispose();
+        }
+
+        /**
+         * Turns the button Emerald Green to signify the correct answer.
+         */
+        public void setCorrectGlow() {
+            this.currentFeedbackColor = new Color(46, 204, 113, 200);
+            this.isBlinking = false;
+            repaint();
+        }
+
+        /**
+         * Makes the button blink Red to signify an incorrect choice.
+         */
+        public void startErrorBlink() {
+            this.currentFeedbackColor = new Color(231, 76, 60, 200);
+            javax.swing.Timer blinkTimer = new javax.swing.Timer(200, null);
+
+            blinkTimer.addActionListener(e -> {
+                isBlinking = !isBlinking;
+                repaint();
+            });
+
+            blinkTimer.start();
+
+            // Stop blinking after 1.2 seconds (approx 3 blinks)
+            new javax.swing.Timer(1200, e -> {
+                blinkTimer.stop();
+                isBlinking = false;
+                repaint();
+            }).start();
+        }
+
+        public void resetVisual() {
+            this.currentFeedbackColor = null;
+            this.isBlinking = false;
+            setOpaque(false);
+            repaint();
+        }
+    }
+
+
+
     private class ModeSelectionScreen extends JDialog {
         public ModeSelectionScreen(Frame owner) {
             super(owner, "PaLO - Select Orchestration Mode", true);
@@ -141,16 +275,15 @@ public class OfflineTutorApp extends JFrame {
             // Create the three options with specific accent colors
             JButton btnScan = createModernCard("Scan Pages", "📄", "Analyze textbook pages in a jiffy!", new Color(46, 204, 113));
             JButton btnAudio = createModernCard("Audio Assisted", "🔊", "Interactive voice mode for the differently abled", new Color(52, 152, 219));
-            JButton btnOnline = createModernCard("Online Mode", "🌐", "For more extensive learning", new Color(149, 165, 166));
+            JButton btnTalk = createModernCard("Talk to AI", "🤖", "Chat with Llama about your subjects", new Color(155, 89, 182));
 
-            btnOnline.setEnabled(false); // Locked as requested
-
-            btnScan.addActionListener(e -> { isAudioMode = false; dispose(); });
-            btnAudio.addActionListener(e -> { isAudioMode = true; dispose(); });
+            btnScan.addActionListener(e -> { isAudioMode = false; isChatMode = false; dispose(); });
+            btnAudio.addActionListener(e -> { isAudioMode = true; isChatMode = false; dispose(); });
+            btnTalk.addActionListener(e -> { isAudioMode = false; isChatMode = true; dispose(); });
 
             cardContainer.add(btnScan);
             cardContainer.add(btnAudio);
-            cardContainer.add(btnOnline);
+            cardContainer.add(btnTalk);
 
             mainPanel.add(cardContainer, BorderLayout.CENTER);
             add(mainPanel);
@@ -499,6 +632,7 @@ public class OfflineTutorApp extends JFrame {
 
 
 
+
     private class SplashScreen extends JDialog {
         public SplashScreen() {
             setUndecorated(true);
@@ -579,15 +713,8 @@ public class OfflineTutorApp extends JFrame {
             layeredPane.add(contentPane, JLayeredPane.DEFAULT_LAYER);
             layeredPane.add(quitBtn, JLayeredPane.PALETTE_LAYER);
 
-            // Progress Bar
-            JProgressBar loading = new JProgressBar();
-            loading.setIndeterminate(true);
-            loading.setPreferredSize(new Dimension(800, 4));
-            loading.setForeground(new Color(46, 204, 113));
-            loading.setBorder(null);
 
             add(layeredPane, BorderLayout.CENTER);
-            add(loading, BorderLayout.SOUTH);
         }
     }
 
@@ -597,6 +724,8 @@ public class OfflineTutorApp extends JFrame {
             protected void paintComponent(Graphics g) {
                 Graphics2D g2 = (Graphics2D) g.create();
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+                // Red themed glow for the termination button
                 g2.setColor(getModel().isRollover() ? new Color(255, 45, 85) : new Color(255, 45, 85, 60));
                 g2.fillRoundRect(0, 0, getWidth(), getHeight(), 12, 12);
                 super.paintComponent(g);
@@ -612,27 +741,29 @@ public class OfflineTutorApp extends JFrame {
         btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
 
         btn.addActionListener(e -> {
-            // 1. STOP TIMER & SHOW REPORT
+            // 1. TERMINATE QUIZ LOGIC
             if (quizTimer != null) quizTimer.stop();
-            if (!sessionLog.isEmpty()) showPerformanceReport();
+            stopZenMusic();
+            saveProgress(); // Save results to the history file
 
-            // 2. HARD RESET OF DATA POOLS (This "Ends" the Quiz)
+            // 2. CLEAR DATA POOLS (Memory Termination)
+            // This ensures the next "Offline Study" starts with a fresh scan
             easyQuestions.clear();
             hardQuestions.clear();
+            expertQuestions.clear();
             sessionLog.clear();
             questionCounter = 0;
             currentQuestion = null;
 
-            // 3. RESET UI DISPLAY
-            questionArea.setText("Session Ended. Please scan a new page to begin.");
-            difficultyLabel.setText("No Active Session");
-            btnA.setText("-"); btnB.setText("-"); btnC.setText("-"); btnD.setText("-");
-            btnA.setEnabled(false); btnB.setEnabled(false); btnC.setEnabled(false); btnD.setEnabled(false);
-
-            // 4. TRANSITION
-            saveProgress();
+            // 3. TERMINATE INTERFACE WINDOW
+            // We set the main window to invisible and switch to a blank state
             this.setVisible(false);
+            if (cardLayout != null) {
+                cardLayout.show(mainCardPanel, "BLANK");
+            }
 
+            // 4. RELAUNCH DASHBOARD
+            // This brings the user back to the main trend analysis/mode selection
             SwingUtilities.invokeLater(() -> {
                 PaLOHomePage home = new PaLOHomePage(this);
                 home.setVisible(true);
@@ -641,8 +772,80 @@ public class OfflineTutorApp extends JFrame {
         return btn;
     }
 
+    /**
+     * Show homepage within the integrated interface
+     */
+    private void showHomepageInIntegratedMode() {
+        // Create and show homepage dialog as before
+        PaLOHomePage home = new PaLOHomePage(this);
+        home.setVisible(true);
+    }
+
+    /**
+     * Setup the main quiz UI (separate window approach)
+     */
+    private void setupUI() {
+        JPanel mainPanel = createQuizPanel();
+        add(mainPanel, BorderLayout.CENTER);
+    }
+
+    /**
+     * Setup the chat UI (separate window approach)
+     */
+    private void setupChatUI() {
+        JPanel mainPanel = createChatPanel();
+        add(mainPanel, BorderLayout.CENTER);
+        
+        // Center the window
+        setLocationRelativeTo(null);
+    }
+
+    private class ChatBubble extends JPanel {
+        public ChatBubble(String text, boolean isUser) {
+            setLayout(new BorderLayout());
+            setOpaque(false);
+            setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+            JTextArea area = new JTextArea(text);
+            area.setLineWrap(true);
+            area.setWrapStyleWord(true);
+            area.setEditable(false);
+            area.setFont(new Font("Segoe UI", Font.PLAIN, 15));
+            area.setForeground(Color.WHITE);
+            area.setOpaque(false);
+            area.setBorder(BorderFactory.createEmptyBorder(12, 16, 12, 16));
+
+            // Styling based on who is speaking
+            Color bubbleColor = isUser ? new Color(52, 152, 219) : new Color(45, 45, 45);
+
+            JPanel bubble = new JPanel(new BorderLayout()) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2.setColor(bubbleColor);
+                    g2.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
+                    g2.dispose();
+                }
+            };
+            bubble.setOpaque(false);
+            bubble.add(area);
+
+            // Align User to Right, AI to Left
+            if (isUser) {
+                add(Box.createHorizontalGlue(), BorderLayout.WEST);
+                add(bubble, BorderLayout.CENTER);
+            } else {
+                add(bubble, BorderLayout.CENTER);
+                add(Box.createHorizontalGlue(), BorderLayout.EAST);
+            }
+        }
+    }
+
     // Add this field at the top of your class
     private boolean isAudioMode = false;
+    private boolean isChatMode = false;
+    private LlamaConnection llamaConnection;
 
     public OfflineTutorApp() {
         SplashScreen splash = new SplashScreen();
@@ -652,124 +855,237 @@ public class OfflineTutorApp extends JFrame {
             try {
                 initAI();
                 loadProgress();
-                Thread.sleep(3000);
+                llamaConnection = new LlamaConnection();
+
+                Thread.sleep(2500);
+
                 SwingUtilities.invokeLater(() -> {
                     splash.dispose();
 
-                    // 1. Launch the Homepage (execution pauses here)
+                    initializeIntegratedUI();
+
+                    // --- APPLY CUSTOM LOGO ---
+                    setAppIcon();
+
+                    setSize(1400, 850);
+
+                    // --- STABLE TASKBAR FIX ---
+                    // Parked off-screen so the new P-Logo stays in the taskbar
+                    this.setLocation(-4000, -4000);
+                    this.setVisible(true);
+
+                    // 4. Launch Dashboard
                     PaLOHomePage home = new PaLOHomePage(this);
                     home.setVisible(true);
-
-                    // 2. Setup the Main Quiz Window
-                    setupUI();
-
-                    // 3. SET WINDOW SIZE (Ensures it is BIG as before)
-                    setSize(1400, 850); // Set your desired large dimensions here
-                    setLocationRelativeTo(null); // Centers the large window on screen
-                    setVisible(true); // Makes the big window visible
                 });
-            } catch (Exception e) { e.printStackTrace(); }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }).start();
     }
 
     private CircleMasteryPanel circleMastery;
 
-
     private CircularTimer clockTimer; // Add this as a field at the top of your class
 
-    private void setupUI() {
-        setTitle("PaLO - Adaptive Learning Orchestrator (" + selectedSubject + " Mode)");
+    private JSpinner questionCountSpinner;
+
+    /**
+     * Initialize the integrated UI with CardLayout for seamless mode switching
+     */
+    private void initializeIntegratedUI() {
+        // 1. Core logic and component initialization
+        initializeComponents();
+
+        setTitle("PaLO - Adaptive Learning Orchestrator");
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
-        // Inside setupUI()
+
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
-                // This is the OS "X" button
                 int response = JOptionPane.showConfirmDialog(
                         null, "Exit PaLO entirely?", "Confirm Exit",
                         JOptionPane.YES_NO_OPTION);
-
                 if (response == JOptionPane.YES_OPTION) {
                     saveProgress();
-                    System.exit(0); // This closes the app entirely
+                    System.exit(0);
                 }
             }
         });
 
-        setLayout(new BorderLayout(20, 0));
-        getContentPane().setBackground(new Color(28, 28, 28));
+        // 2. Initialize CardLayout for seamless mode switching
+        cardLayout = new CardLayout();
+        mainCardPanel = new JPanel(cardLayout);
+        mainCardPanel.setBackground(new Color(28, 28, 28));
 
-        // --- INITIALIZE SIDEBAR COMPONENTS ---
-        aiStatusLabel = new JLabel("Ready", SwingConstants.CENTER);
-        aiStatusLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        aiStatusLabel.setForeground(Color.GRAY);
+        // 3. Create a Blank Starter Card (The "Hidden" State)
+        // This ensures the window looks like an empty dark container before a mode is chosen
+        JPanel blankPlaceholder = new JPanel();
+        blankPlaceholder.setBackground(new Color(28, 28, 28));
+        mainCardPanel.add(blankPlaceholder, "BLANK");
 
-        difficultyLabel = new JLabel("Question #1 | Current Level: EASY", SwingConstants.CENTER);
-        difficultyLabel.setFont(new Font("Segoe UI", Font.BOLD, 18));
-        difficultyLabel.setForeground(new Color(230, 126, 34));
+        // 4. Build individual mode panels in the background
+        quizPanel = createQuizPanel();
+        chatPanel = createChatPanel();
+        audioPanel = createAudioPanel();
 
-        // Initialize New Circular Timer (Clock Button)
-        clockTimer = new CircularTimer();
-        clockTimer.setAlignmentX(Component.CENTER_ALIGNMENT);
+        // 5. Add functional panels to the stack
+        mainCardPanel.add(quizPanel, "QUIZ");
+        mainCardPanel.add(chatPanel, "CHAT");
+        mainCardPanel.add(audioPanel, "AUDIO");
 
+        setLayout(new BorderLayout());
+        add(mainCardPanel, BorderLayout.CENTER);
+
+        // 6. CRITICAL: Default to the BLANK card
+        // The main window will remain on this "Empty" card until
+        // animateAndTransition() calls switchToQuizMode() or switchToChatMode()
+        cardLayout.show(mainCardPanel, "BLANK");
+
+        // Ensure the main window starts invisible
+        this.setVisible(false);
+    }
+
+    /**
+     * Initialize all UI components that are referenced in panels
+     */
+    private void initializeComponents() {
+        // Initialize quiz components
         circleMastery = new CircleMasteryPanel();
-        circleMastery.setBackground(new Color(35, 35, 35));
-        circleMastery.setAlignmentX(Component.CENTER_ALIGNMENT);
-        circleMastery.setPreferredSize(new Dimension(180, 180));
-        circleMastery.setMaximumSize(new Dimension(180, 180));
+        clockTimer = new CircularTimer();
+        
+        // Initialize quiz option buttons with theme colors
+        btnA = createOptionButton("-", new Color(52, 152, 219));  // Blue
+        btnB = createOptionButton("-", new Color(155, 89, 182));  // Purple  
+        btnC = createOptionButton("-", new Color(46, 204, 113));  // Green
+        btnD = createOptionButton("-", new Color(241, 196, 15));  // Yellow
+        
+        // Initialize other components
+        aiStatusLabel = new JLabel("AI Status: Ready", SwingConstants.CENTER);
+        aiStatusLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        aiStatusLabel.setForeground(Color.LIGHT_GRAY);
+    }
+
+    /**
+     * Switch to Quiz mode with slide animation
+     */
+    public void switchToQuizMode() {
+        isChatMode = false;
+        isAudioMode = false;
+        animatePanelTransition("QUIZ");
+    }
+
+    /**
+     * Switch to Chat mode with slide animation
+     */
+    public void switchToChatMode() {
+        isChatMode = true;
+        isAudioMode = false;
+        animatePanelTransition("CHAT");
+    }
+
+    /**
+     * Switch to Audio mode with slide animation
+     */
+    public void switchToAudioMode() {
+        isChatMode = false;
+        isAudioMode = true;
+        animatePanelTransition("AUDIO");
+    }
+
+    /**
+     * Animate panel transition with slide effect
+     */
+    private void animatePanelTransition(String targetPanel) {
+        // Immediately switch to the target panel for better UX
+        cardLayout.show(mainCardPanel, targetPanel);
+        revalidate();
+        repaint();
+        
+        // Optional: Add a simple fade-in effect if needed in the future
+        // For now, immediate switching provides better responsiveness
+    }
+
+    /**
+     * Create the Quiz mode panel
+     */
+    private JPanel createQuizPanel() {
+        JPanel mainPanel = new JPanel(new BorderLayout(20, 0));
+        mainPanel.setBackground(new Color(28, 28, 28));
 
         // --- SIDEBAR (LEFT) ---
         JPanel sidebar = new JPanel();
         sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
-        sidebar.setPreferredSize(new Dimension(280, 800));
+        sidebar.setPreferredSize(new Dimension(300, 800));
         sidebar.setBackground(new Color(35, 35, 35));
-        sidebar.setBorder(BorderFactory.createEmptyBorder(30, 15, 30, 15));
+        sidebar.setBorder(BorderFactory.createEmptyBorder(25, 15, 25, 15));
 
+        // 1. Mastery Circle
         addSidebarSection(sidebar, "OVERALL MASTERY", circleMastery);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 40)));
+        sidebar.add(Box.createRigidArea(new Dimension(0, 30)));
 
-        // Replacing old timer text with Interactive Clock
-        addSidebarSection(sidebar, "SET DURATION", clockTimer);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 15)));
+        // 2. Timer Section
+        addSidebarSection(sidebar, "QUIZ DURATION", clockTimer);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 5)));
+        timerLabel = new JLabel("Timer: Off", SwingConstants.CENTER);
+        timerLabel.setForeground(Color.LIGHT_GRAY);
+        timerLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(timerLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 25)));
 
-        // New Minimalist Quit Quiz Button
-        JButton btnQuit = createQuitQuizButton();
-        btnQuit.setAlignmentX(Component.CENTER_ALIGNMENT);
-        btnQuit.setMaximumSize(new Dimension(240, 45));
-        sidebar.add(btnQuit);
+        // 3. Question Count Spinner - Always enabled
+        JLabel countLabel = new JLabel("QUESTIONS TO GENERATE");
+        countLabel.setFont(new Font("Segoe UI", Font.BOLD, 11));
+        countLabel.setForeground(Color.GRAY);
+        countLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(countLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 8)));
 
-        sidebar.add(Box.createRigidArea(new Dimension(0, 40)));
+        questionCountSpinner = new JSpinner(new SpinnerNumberModel(10, 5, 30, 1));
+        questionCountSpinner.setMaximumSize(new Dimension(240, 45));
+        questionCountSpinner.setAlignmentX(Component.CENTER_ALIGNMENT);
+        questionCountSpinner.setEnabled(true); // Always enabled
+        JComponent editor = questionCountSpinner.getEditor();
+        JFormattedTextField textField = ((JSpinner.DefaultEditor) editor).getTextField();
+        textField.setBackground(new Color(50, 50, 50));
+        textField.setForeground(Color.WHITE);
+        textField.setCaretColor(Color.WHITE);
+        textField.setEditable(true); // Always editable
+        sidebar.add(questionCountSpinner);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 30)));
 
-        subjectDropdown = new JComboBox<>(new String[]{"Physics", "Computer Science", "Biology", "General"});
-        subjectDropdown.setMaximumSize(new Dimension(240, 35));
-        addSidebarSection(sidebar, "SUBJECT", subjectDropdown);
-
-        sidebar.add(Box.createVerticalGlue());
+        // 4. Status & Scan
         sidebar.add(aiStatusLabel);
         sidebar.add(Box.createRigidArea(new Dimension(0, 15)));
 
         JButton btnScan = new JButton("SCAN TEXTBOOK");
         btnScan.setAlignmentX(Component.CENTER_ALIGNMENT);
-
-// Increased dimensions for a "bigger" look
         btnScan.setPreferredSize(new Dimension(240, 70));
         btnScan.setMaximumSize(new Dimension(240, 70));
-
         btnScan.setFont(new Font("Segoe UI Black", Font.BOLD, 16));
         btnScan.setBackground(new Color(52, 152, 219));
         btnScan.setForeground(Color.WHITE);
-
-// Added white border to match the minimalist dashboard style
         btnScan.setBorder(BorderFactory.createLineBorder(Color.WHITE, 2));
         btnScan.setCursor(new Cursor(Cursor.HAND_CURSOR));
-
         btnScan.addActionListener(e -> performScan());
         sidebar.add(btnScan);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 20)));
+
+        // 5. END QUIZ Button - Bigger and under SCAN
+        JButton btnEndQuiz = createQuitQuizButton();
+        btnEndQuiz.setPreferredSize(new Dimension(240, 70)); // Same size as SCAN button
+        btnEndQuiz.setMaximumSize(new Dimension(240, 70));
+        sidebar.add(btnEndQuiz);
+        sidebar.add(Box.createVerticalGlue());
 
         // --- QUIZ CONTENT (CENTER) ---
         JPanel quizContent = new JPanel(new BorderLayout(20, 20));
         quizContent.setOpaque(false);
         quizContent.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 30));
+
+        difficultyLabel = new JLabel("Question #1 | Current Level: EASY", SwingConstants.CENTER);
+        difficultyLabel.setFont(new Font("Segoe UI", Font.BOLD, 18));
+        difficultyLabel.setForeground(new Color(230, 126, 34));
 
         questionArea = new JTextArea();
         questionArea.setFont(new Font("Segoe UI", Font.PLAIN, 26));
@@ -787,13 +1103,6 @@ public class OfflineTutorApp extends JFrame {
 
         JPanel btnGrid = new JPanel(new GridLayout(2, 2, 25, 25));
         btnGrid.setOpaque(false);
-
-        // Pure, Highlighted minimalist colors as requested
-        btnA = createOptionButton("A", new Color(0, 220, 255));   // Electric Cyan
-        btnB = createOptionButton("B", new Color(255, 45, 85));   // Vibrant Rose
-        btnC = createOptionButton("C", new Color(50, 255, 120));  // Spring Green
-        btnD = createOptionButton("D", new Color(255, 200, 0));   // Cyber Yellow
-
         btnGrid.add(btnA); btnGrid.add(btnB);
         btnGrid.add(btnC); btnGrid.add(btnD);
 
@@ -801,8 +1110,434 @@ public class OfflineTutorApp extends JFrame {
         quizContent.add(qScroll, BorderLayout.CENTER);
         quizContent.add(btnGrid, BorderLayout.SOUTH);
 
-        add(sidebar, BorderLayout.WEST);
-        add(quizContent, BorderLayout.CENTER);
+        mainPanel.add(sidebar, BorderLayout.WEST);
+        mainPanel.add(quizContent, BorderLayout.CENTER);
+
+        return mainPanel;
+    }
+
+    // Helper to create the mode-switching buttons in sidebar
+    private JButton createSidebarModeButton(String text, Color accent) {
+        JButton b = new JButton(text);
+        b.setAlignmentX(Component.CENTER_ALIGNMENT);
+        b.setMaximumSize(new Dimension(240, 40));
+        b.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        b.setForeground(Color.WHITE);
+        b.setBackground(new Color(accent.getRed(), accent.getGreen(), accent.getBlue(), 50));
+        b.setBorder(BorderFactory.createLineBorder(accent, 1));
+        b.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        b.setFocusPainted(false);
+        return b;
+    }
+
+    /**
+     * Create the Chat mode panel
+     */
+    private JPanel createChatPanel() {
+        JPanel mainPanel = new JPanel(new BorderLayout(20, 0));
+        mainPanel.setBackground(new Color(28, 28, 28));
+
+        // --- SIDEBAR (LEFT) ---
+        JPanel sidebar = new JPanel();
+        sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
+        sidebar.setPreferredSize(new Dimension(280, 800));
+        sidebar.setBackground(new Color(35, 35, 35));
+        sidebar.setBorder(BorderFactory.createEmptyBorder(30, 15, 30, 15));
+
+        JLabel titleLabel = new JLabel("Talk to AI");
+        titleLabel.setFont(new Font("Segoe UI", Font.BOLD, 24));
+        titleLabel.setForeground(new Color(155, 89, 182));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(titleLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 20)));
+
+        JLabel infoLabel = new JLabel("<html><center>Chat with Llama about your subjects. All from inside PaLO—no browser or terminal.</center></html>");
+        infoLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        infoLabel.setForeground(Color.LIGHT_GRAY);
+        infoLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(infoLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 25)));
+
+        // --- Ollama Panel (Existing logic) ---
+        JLabel ollamaStatusLabel = new JLabel("Checking...");
+        ollamaStatusLabel.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        ollamaStatusLabel.setForeground(Color.LIGHT_GRAY);
+        ollamaStatusLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(ollamaStatusLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 8)));
+
+        JButton btnStartOllama = new JButton("Start Ollama");
+        btnStartOllama.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnStartOllama.setMaximumSize(new Dimension(240, 36));
+        btnStartOllama.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        btnStartOllama.setBackground(new Color(46, 204, 113));
+        btnStartOllama.setForeground(Color.WHITE);
+        btnStartOllama.setFocusPainted(false);
+        btnStartOllama.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        btnStartOllama.addActionListener(e -> {
+            btnStartOllama.setEnabled(false);
+            ollamaStatusLabel.setText("Starting Ollama...");
+            new Thread(() -> {
+                boolean ok = llamaConnection.startOllamaFromApp();
+                SwingUtilities.invokeLater(() -> {
+                    btnStartOllama.setEnabled(true);
+                    updateOllamaStatusLabel(ollamaStatusLabel);
+                });
+            }).start();
+        });
+
+        JButton btnDownloadModel = new JButton("Download model (" + LlamaConnection.getDefaultPullModelName() + ")");
+        btnDownloadModel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnDownloadModel.setMaximumSize(new Dimension(240, 36));
+        btnDownloadModel.setFont(new Font("Segoe UI", Font.BOLD, 11));
+        btnDownloadModel.setBackground(new Color(52, 152, 219));
+        btnDownloadModel.setForeground(Color.WHITE);
+        btnDownloadModel.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        btnDownloadModel.addActionListener(e -> {
+            btnDownloadModel.setEnabled(false);
+            ollamaStatusLabel.setText("Downloading...");
+            new Thread(() -> {
+                try {
+                    llamaConnection.pullDefaultModel(() -> { });
+                    SwingUtilities.invokeLater(() -> {
+                        updateOllamaStatusLabel(ollamaStatusLabel);
+                        btnDownloadModel.setEnabled(true);
+                    });
+                } catch (Exception ex) {
+                    SwingUtilities.invokeLater(() -> {
+                        ollamaStatusLabel.setText("Download failed.");
+                        btnDownloadModel.setEnabled(true);
+                    });
+                }
+            }).start();
+        });
+
+        JButton btnCheckOllama = new JButton("Check again");
+        btnCheckOllama.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnCheckOllama.setMaximumSize(new Dimension(240, 32));
+        btnCheckOllama.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+        btnCheckOllama.setForeground(Color.LIGHT_GRAY);
+        btnCheckOllama.setContentAreaFilled(false);
+        btnCheckOllama.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        btnCheckOllama.addActionListener(e -> {
+            llamaConnection.refreshModel();
+            updateOllamaStatusLabel(ollamaStatusLabel);
+        });
+
+        sidebar.add(btnStartOllama);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 6)));
+        sidebar.add(btnDownloadModel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 4)));
+        sidebar.add(btnCheckOllama);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 25)));
+
+        subjectDropdown = new JComboBox<>(new String[]{"Physics", "Computer Science", "Biology", "General"});
+        subjectDropdown.setMaximumSize(new Dimension(240, 35));
+        addSidebarSection(sidebar, "SUBJECT", subjectDropdown);
+
+        sidebar.add(Box.createVerticalGlue());
+
+        // --- NEW GO BACK BUTTON ---
+        JButton btnBack = new JButton("BACK TO DASHBOARD");
+        btnBack.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnBack.setPreferredSize(new Dimension(240, 50));
+        btnBack.setMaximumSize(new Dimension(240, 50));
+        btnBack.setFont(new Font("Segoe UI Black", Font.BOLD, 12));
+        btnBack.setBackground(new Color(45, 45, 45));
+        btnBack.setForeground(Color.WHITE);
+        btnBack.setBorder(BorderFactory.createLineBorder(Color.WHITE, 1));
+        btnBack.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        btnBack.addActionListener(e -> {
+            // Switch main window to blank and hide it
+            cardLayout.show(mainCardPanel, "BLANK");
+            this.setVisible(false);
+            // Re-open Dashboard
+            PaLOHomePage home = new PaLOHomePage(this);
+            home.setVisible(true);
+        });
+        sidebar.add(btnBack);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 20)));
+
+        updateOllamaStatusLabel(ollamaStatusLabel);
+
+        // --- CHAT CONTENT (CENTER) ---
+        JPanel chatContent = new JPanel(new BorderLayout(20, 20));
+        chatContent.setOpaque(false);
+        chatContent.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 30));
+
+        chatArea = new JTextArea();
+        chatArea.setFont(new Font("Segoe UI", Font.PLAIN, 16));
+        chatArea.setLineWrap(true);
+        chatArea.setWrapStyleWord(true);
+        chatArea.setBackground(new Color(40, 40, 40));
+        chatArea.setForeground(Color.WHITE);
+        chatArea.setEditable(false);
+        chatArea.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+        chatArea.setText("Welcome to PaLO Chat! Ask me anything.\n\n");
+
+        JScrollPane chatScroll = new JScrollPane(chatArea);
+        chatScroll.getViewport().setOpaque(false);
+        chatScroll.setOpaque(false);
+        chatScroll.setBorder(BorderFactory.createLineBorder(new Color(60, 60, 60), 2));
+
+        JPanel inputPanel = new JPanel(new BorderLayout(10, 10));
+        inputPanel.setOpaque(false);
+        inputPanel.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
+
+        chatInput = new JTextField();
+        chatInput.setFont(new Font("Segoe UI", Font.PLAIN, 16));
+        chatInput.setBackground(new Color(50, 50, 50));
+        chatInput.setForeground(Color.WHITE);
+        chatInput.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(100, 100, 100), 2),
+                BorderFactory.createEmptyBorder(10, 15, 10, 15)
+        ));
+        chatInput.addActionListener(e -> sendChatMessage());
+
+        sendButton = new JButton("Send");
+        sendButton.setFont(new Font("Segoe UI", Font.BOLD, 16));
+        sendButton.setBackground(new Color(155, 89, 182));
+        sendButton.setForeground(Color.WHITE);
+        sendButton.setPreferredSize(new Dimension(100, 50));
+        sendButton.setBorder(BorderFactory.createLineBorder(new Color(155, 89, 182), 2));
+        sendButton.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        sendButton.addActionListener(e -> sendChatMessage());
+
+        inputPanel.add(chatInput, BorderLayout.CENTER);
+        inputPanel.add(sendButton, BorderLayout.EAST);
+
+        chatContent.add(chatScroll, BorderLayout.CENTER);
+        chatContent.add(inputPanel, BorderLayout.SOUTH);
+
+        mainPanel.add(sidebar, BorderLayout.WEST);
+        mainPanel.add(chatContent, BorderLayout.CENTER);
+
+        return mainPanel;
+    }
+
+    /**
+     * Create the Audio Assisted mode panel
+     */
+    private JPanel createAudioPanel() {
+        JPanel mainPanel = new JPanel(new BorderLayout(20, 0));
+        mainPanel.setBackground(new Color(28, 28, 28));
+
+        // --- SIDEBAR (LEFT) ---
+        JPanel sidebar = new JPanel();
+        sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
+        sidebar.setPreferredSize(new Dimension(300, 800));
+        sidebar.setBackground(new Color(35, 35, 35));
+        sidebar.setBorder(BorderFactory.createEmptyBorder(25, 15, 25, 15));
+
+        JLabel titleLabel = new JLabel("Audio Assisted Mode");
+        titleLabel.setFont(new Font("Segoe UI", Font.BOLD, 24));
+        titleLabel.setForeground(new Color(52, 152, 219));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(titleLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 20)));
+
+        JLabel infoLabel = new JLabel("<html><center>Interactive voice mode for the differently abled. Use voice commands and audio feedback.</center></html>");
+        infoLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        infoLabel.setForeground(Color.LIGHT_GRAY);
+        infoLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(infoLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 30)));
+
+        // Audio controls
+        JButton btnStartVoice = new JButton("Start Voice Recognition");
+        btnStartVoice.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnStartVoice.setMaximumSize(new Dimension(240, 50));
+        btnStartVoice.setFont(new Font("Segoe UI Black", Font.BOLD, 14));
+        btnStartVoice.setBackground(new Color(52, 152, 219));
+        btnStartVoice.setForeground(Color.WHITE);
+        btnStartVoice.setBorder(BorderFactory.createLineBorder(Color.WHITE, 2));
+        btnStartVoice.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        btnStartVoice.addActionListener(e -> startVoiceRecognition());
+        sidebar.add(btnStartVoice);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 15)));
+
+        JButton btnPlayAudio = new JButton("Play Question Audio");
+        btnPlayAudio.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnPlayAudio.setMaximumSize(new Dimension(240, 40));
+        btnPlayAudio.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        btnPlayAudio.setBackground(new Color(46, 204, 113));
+        btnPlayAudio.setForeground(Color.WHITE);
+        btnPlayAudio.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        btnPlayAudio.addActionListener(e -> playQuestionAudio());
+        sidebar.add(btnPlayAudio);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 30)));
+
+        // Mode switcher buttons
+        JButton btnQuiz = createSidebarModeButton("QUIZ MODE", new Color(46, 204, 113));
+        btnQuiz.addActionListener(e -> switchToQuizMode());
+        sidebar.add(btnQuiz);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 10)));
+
+        JButton btnChat = createSidebarModeButton("TALK TO AI", new Color(155, 89, 182));
+        btnChat.addActionListener(e -> switchToChatMode());
+        sidebar.add(btnChat);
+        sidebar.add(Box.createVerticalGlue());
+
+        // --- AUDIO CONTENT (CENTER) ---
+        JPanel audioContent = new JPanel(new BorderLayout(20, 20));
+        audioContent.setOpaque(false);
+        audioContent.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 30));
+
+        // Audio status display
+        JLabel audioStatusLabel = new JLabel("<html><center><font size='6'>🎤</font><br><br>Audio Mode Ready<br><font color='#888888'>Click 'Start Voice Recognition' to begin</font></center></html>", SwingConstants.CENTER);
+        audioStatusLabel.setFont(new Font("Segoe UI", Font.PLAIN, 18));
+        audioStatusLabel.setForeground(Color.WHITE);
+        audioStatusLabel.setBackground(new Color(40, 40, 40));
+        audioStatusLabel.setOpaque(true);
+        audioStatusLabel.setBorder(BorderFactory.createLineBorder(new Color(60, 60, 60), 2));
+        audioStatusLabel.setBorder(BorderFactory.createEmptyBorder(40, 20, 40, 20));
+
+        audioContent.add(audioStatusLabel, BorderLayout.CENTER);
+
+        mainPanel.add(sidebar, BorderLayout.WEST);
+        mainPanel.add(audioContent, BorderLayout.CENTER);
+
+        return mainPanel;
+    }
+
+    // Placeholder methods for audio functionality
+    private void startVoiceRecognition() {
+        JOptionPane.showMessageDialog(this, "Voice recognition feature coming soon!", "Audio Mode", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void playQuestionAudio() {
+        JOptionPane.showMessageDialog(this, "Audio playback feature coming soon!", "Audio Mode", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /**
+     * Initializes the Deep Java Library (DJL) engine and loads the local
+     * predictor model for adaptive learning difficulty estimation.
+     */
+    private void initAI() {
+        try {
+            // Paths to your local PyTorch model file
+            Path modelPath = Paths.get("tutor_brain.pt");
+
+            // Checking if model exists before attempting load to prevent crash
+            if (!modelPath.toFile().exists()) {
+                System.err.println("AI Engine: Model file 'tutor_brain.pt' not found. Running in rule-based mode.");
+                return;
+            }
+
+            Model model = Model.newInstance("AdaptiveTutor");
+            model.load(modelPath);
+
+            // TutorTranslator is the inner class defined at the bottom of your file
+            this.predictor = model.newPredictor(new TutorTranslator());
+
+            SwingUtilities.invokeLater(() -> {
+                if (aiStatusLabel != null) aiStatusLabel.setText("AI Engine: Neural Network Loaded");
+            });
+        } catch (Exception e) {
+            System.err.println("AI Initialization Error: " + e.getMessage());
+            // Fallback: predictor remains null, updateAI handles this gracefully
+        }
+    }
+
+    private void updateOllamaStatusLabel(JLabel statusLabel) {
+        if (statusLabel == null) return;
+        if (llamaConnection.isAvailable()) {
+            statusLabel.setForeground(new Color(46, 204, 113));
+            statusLabel.setText("Connected · " + llamaConnection.getModelName());
+        } else {
+            statusLabel.setForeground(new Color(231, 76, 60));
+            statusLabel.setText("Ollama not running");
+        }
+    }
+
+    /**
+     * Enable quiz controls after scanning
+     */
+    private void enableQuizControls() {
+        SwingUtilities.invokeLater(() -> {
+            if (questionCountSpinner != null) {
+                questionCountSpinner.setEnabled(true);
+                JComponent editor = questionCountSpinner.getEditor();
+                if (editor instanceof JSpinner.DefaultEditor) {
+                    JFormattedTextField textField = ((JSpinner.DefaultEditor) editor).getTextField();
+                    textField.setEditable(true);
+                }
+            }
+            if (clockTimer != null) {
+                clockTimer.setEnabled(true);
+            }
+        });
+    }
+
+    /**
+     * Disable quiz controls until scanning
+     */
+    private void disableQuizControls() {
+        SwingUtilities.invokeLater(() -> {
+            if (questionCountSpinner != null) {
+                questionCountSpinner.setEnabled(false);
+                JComponent editor = questionCountSpinner.getEditor();
+                if (editor instanceof JSpinner.DefaultEditor) {
+                    JFormattedTextField textField = ((JSpinner.DefaultEditor) editor).getTextField();
+                    textField.setEditable(false);
+                }
+            }
+            if (clockTimer != null) {
+                clockTimer.setEnabled(false);
+            }
+        });
+    }
+
+    private void sendChatMessage() {
+        String userMessage = chatInput.getText().trim();
+        if (userMessage.isEmpty()) return;
+
+        chatArea.append("You: " + userMessage + "\n\nAI: ");
+        chatInput.setText("");
+        chatArea.setCaretPosition(chatArea.getDocument().getLength());
+
+        chatInput.setEnabled(false);
+        sendButton.setEnabled(false);
+        sendButton.setText("Thinking...");
+
+        new Thread(() -> {
+            try {
+                // MATCHING THE INTERFACE: handleToken and handleComplete
+                llamaConnection.askStreaming(userMessage, new LlamaConnection.StreamHandler() {
+
+                    @Override
+                    public void handleToken(String token) {
+                        SwingUtilities.invokeLater(() -> {
+                            chatArea.append(token);
+                            chatArea.setCaretPosition(chatArea.getDocument().getLength());
+                        });
+                    }
+
+                    @Override
+                    public void handleComplete() {
+                        SwingUtilities.invokeLater(() -> {
+                            chatArea.append("\n\n");
+                            finishGeneration();
+                        });
+                    }
+                });
+
+            } catch (Exception ex) {
+                SwingUtilities.invokeLater(() -> {
+                    chatArea.append("\n[Error: " + ex.getMessage() + "]\n\n");
+                    finishGeneration();
+                });
+            }
+        }).start();
+    }
+
+    // Helper to tidy up UI state
+    private void finishGeneration() {
+        chatInput.setEnabled(true);
+        sendButton.setEnabled(true);
+        sendButton.setText("Send");
+        chatInput.requestFocus();
+        chatArea.setCaretPosition(chatArea.getDocument().getLength());
     }
 
     private void addSidebarSection(JPanel p, String title, JComponent comp) {
@@ -866,42 +1601,8 @@ public class OfflineTutorApp extends JFrame {
         checkAnswer("TIMEOUT");
     }
 
-    private JButton createOptionButton(String text, Color uniqueColor) {
-        JButton btn = new JButton(text) {
-            @Override
-            protected void paintComponent(Graphics g) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
-                // FIX: Use the specific 'uniqueColor' passed for this button, not the global theme
-                if (getModel().isRollover()) {
-                    g2.setColor(uniqueColor);
-                } else {
-                    g2.setColor(new Color(30, 30, 30, 150));
-                }
-
-                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
-
-                // ADDED: Draw a white border to match your requested aesthetic
-                g2.setColor(Color.WHITE);
-                g2.setStroke(new BasicStroke(1.5f));
-                g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 15, 15);
-
-                super.paintComponent(g);
-                g2.dispose();
-            }
-        };
-
-        btn.setFont(new Font("Segoe UI Black", Font.PLAIN, 24));
-        btn.setForeground(Color.WHITE);
-        btn.setPreferredSize(new Dimension(0, 100));
-        btn.setFocusPainted(false);
-        btn.setBorderPainted(false);
-        btn.setContentAreaFilled(false);
-        btn.setOpaque(false);
-        btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-
-        btn.addActionListener(e -> checkAnswer(btn.getText()));
+    private QuizOptionButton createOptionButton(String text, Color uniqueColor) {
+        QuizOptionButton btn = new QuizOptionButton(text, uniqueColor);
         btn.setEnabled(false); // Enable this only after a scan
         return btn;
     }
@@ -913,29 +1614,67 @@ public class OfflineTutorApp extends JFrame {
     }
 
     // --- LOGIC: CHECK ANSWER ---
+    private void checkAnswer(QuizOptionButton selectedBtn) {
+        handleAnswerSelection(selectedBtn.getText(), selectedBtn);
+    }
+
     private void checkAnswer(String selectedText) {
+        handleAnswerSelection(selectedText, null);
+    }
+
+    private void handleAnswerSelection(String selectedText, QuizOptionButton selectedBtn) {
         if (quizTimer != null) quizTimer.stop();
         if (currentQuestion == null) return;
 
+        // Log the user selection
         currentQuestion.userProvidedAnswer = selectedText;
         sessionLog.add(currentQuestion);
 
         boolean isCorrect = selectedText.equals(currentQuestion.correctAnswer);
         float score = isCorrect ? 1.0f : 0.0f;
 
+        // 1. Logic Updates
         studentHistory.add(score);
-        updateAI(score); // Mastery updates here
+        updateAI(score);
         removeQuestionFromPools(currentQuestion);
 
+        // 2. Advanced Visual Feedback
+        // Disable all buttons immediately to prevent multiple clicks
+        btnA.setEnabled(false); btnB.setEnabled(false);
+        btnC.setEnabled(false); btnD.setEnabled(false);
+
         if (isCorrect) {
-            JOptionPane.showMessageDialog(this, "Correct! ✅");
+            // Correct Choice: Solid Green Glow
+            selectedBtn.setCorrectGlow();
         } else {
-            JOptionPane.showMessageDialog(this, "Wrong! ❌\nCorrect Answer: " + currentQuestion.correctAnswer);
+            // Incorrect Choice: User selection blinks Red
+            if (selectedBtn != null) {
+                selectedBtn.startErrorBlink();
+            }
+
+            // Reveal the correct answer with a Green Glow
+            revealCorrectAnswer();
         }
 
-        // This ensures the next question loads only AFTER the user clicks 'OK'
-        boolean nextIsEasy = (score == 0.0f);
-        SwingUtilities.invokeLater(() -> loadNextQuestion(nextIsEasy));
+        // 3. Smooth Transition
+        // 1.5s pause allows the user to observe the blink and the reveal
+        javax.swing.Timer transitionTimer = new javax.swing.Timer(1500, e -> {
+            SwingUtilities.invokeLater(() -> loadNextQuestion(this.currentLevel));
+        });
+        transitionTimer.setRepeats(false);
+        transitionTimer.start();
+    }
+
+    /**
+     * Helper to find and highlight the correct button when the user fails.
+     */
+    private void revealCorrectAnswer() {
+        String correct = currentQuestion.correctAnswer;
+        // Use getText().contains because HTML tags surround the text
+        if (btnA.getText().contains(correct)) btnA.setCorrectGlow();
+        else if (btnB.getText().contains(correct)) btnB.setCorrectGlow();
+        else if (btnC.getText().contains(correct)) btnC.setCorrectGlow();
+        else if (btnD.getText().contains(correct)) btnD.setCorrectGlow();
     }
 
     private void showPerformanceReport() {
@@ -1024,85 +1763,155 @@ public class OfflineTutorApp extends JFrame {
     private void removeQuestionFromPools(QuizItem q) {
         askedQuestionIDs.add(q.id);
         easyQuestions.removeIf(item -> item.id.equals(q.id));
+        easyMediumQuestions.removeIf(item -> item.id.equals(q.id));
+        mediumQuestions.removeIf(item -> item.id.equals(q.id));
+        mediumHardQuestions.removeIf(item -> item.id.equals(q.id));
         hardQuestions.removeIf(item -> item.id.equals(q.id));
+        expertQuestions.removeIf(item -> item.id.equals(q.id));
     }
 
     private void updateAI(float score) {
         float probability = 0.5f;
+
         try {
-            if (predictor != null) {
-                float[] input = new float[studentHistory.size()];
-                for(int i=0; i<studentHistory.size(); i++) input[i] = studentHistory.get(i);
-                probability = predictor.predict(input);
+            if (predictor != null && !studentHistory.isEmpty()) {
+                // Convert the current history list to a primitive array
+                // The TutorTranslator will handle the specific 10-step windowing
+                float[] historyArray = new float[studentHistory.size()];
+                for (int i = 0; i < studentHistory.size(); i++) {
+                    historyArray[i] = studentHistory.get(i);
+                }
+
+                // Predict the mastery probability based on recent sequence
+                probability = predictor.predict(historyArray);
             }
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            System.err.println("AI Prediction Error: " + e.getMessage());
+            probability = 0.5f; // Safe fallback
+        }
 
-        int percent = (int)(probability * 100);
+        // Convert probability to 0-100 scale for UI components
+        int percent = (int) (probability * 100);
 
-        // Explicitly update the circle mastery component
+        // Update the circular Mastery UI
         if (circleMastery != null) {
             circleMastery.setProgress(percent);
         }
 
-        if (probability < 0.4) {
-            aiStatusLabel.setForeground(new Color(231, 76, 60));
-            aiStatusLabel.setText("Status: Review Needed");
+        // --- 6-TIER DIFFICULTY MAPPING ---
+        // Logic: Lower probability means the student is struggling -> EASY
+        // Higher probability means mastery is high -> EXPERT
+        String targetLevel;
+        Color statusColor;
+
+        if (percent < 15) {
+            targetLevel = "EASY";
+            statusColor = new Color(46, 204, 113); // Emerald Green
+        } else if (percent < 30) {
+            targetLevel = "EASY-MEDIUM";
+            statusColor = new Color(171, 235, 198); // Light Green
+        } else if (percent < 50) {
+            targetLevel = "MEDIUM";
+            statusColor = new Color(241, 196, 15); // Sunflower Yellow
+        } else if (percent < 70) {
+            targetLevel = "MEDIUM-HARD";
+            statusColor = new Color(230, 126, 34); // Carrot Orange
+        } else if (percent < 85) {
+            targetLevel = "HARD";
+            statusColor = new Color(231, 76, 60); // Alizarin Red
         } else {
-            aiStatusLabel.setForeground(new Color(46, 204, 113));
-            aiStatusLabel.setText("Status: Mastering Topic");
+            targetLevel = "EXPERT";
+            statusColor = new Color(155, 89, 182); // Amethyst Purple
         }
+
+        // Update Sidebar Status
+        if (aiStatusLabel != null) {
+            aiStatusLabel.setForeground(statusColor);
+            aiStatusLabel.setText("Status: " + targetLevel + " (" + percent + "%)");
+        }
+
+        // Update global state for the loadNextQuestion method
+        this.currentLevel = targetLevel;
+
+        // System.out.println("LSTM Input Size: " + studentHistory.size() + " | Mastery: " + percent + "%");
     }
 
-    private void handleExitRequest() {
-        int response = JOptionPane.showConfirmDialog(
-                this, "Are you sure you want to exit the session?",
-                "Exit Confirmation", JOptionPane.YES_NO_OPTION);
 
-        if (response == JOptionPane.YES_OPTION) {
-            showPerformanceReport(); // This now opens the Dialog
-            saveProgress();
-            System.exit(0);
+    private void loadNextQuestion(String targetLevel) {
+        // 1. Determine which pool to use based on the AI's target level
+        List<QuizItem> pool = getPoolByLevel(targetLevel);
+
+        // 2. Fallback Logic: If the target pool is empty, find the next available pool
+        if (pool == null || pool.isEmpty()) {
+            pool = findFirstAvailablePool(targetLevel);
         }
-    }
 
-    private void loadNextQuestion(boolean isEasy) {
-        List<QuizItem> pool = isEasy ? easyQuestions : hardQuestions;
-        if (pool.isEmpty()) pool = (isEasy) ? hardQuestions : easyQuestions;
-
-        if (pool.isEmpty()) {
+        // 3. If all pools are empty, the quiz is over
+        if (pool == null || pool.isEmpty()) {
             finishQuiz();
             return;
         }
 
+        // 4. Reset UI: Clear the green/red colors from the previous turn
+        resetButtonStyles();
 
-        // Increment the counter every time a new question is loaded
+        // 5. Setup the current question
         questionCounter++;
-
         currentQuestion = pool.get(0);
 
-        // Update the label to show both the Number and the Difficulty
-        String levelText = isEasy ? "EASY" : "HARD";
-        difficultyLabel.setText("Question #" + questionCounter + " | Current Level: " + levelText);
+        // 6. Update the UI Labels
+        difficultyLabel.setText("Question #" + questionCounter + " | Level: " + targetLevel);
+        updateDifficultyLabelColor(targetLevel);
 
-        if (isEasy) {
-            difficultyLabel.setForeground(new Color(230, 126, 34));
-        } else {
-            difficultyLabel.setForeground(new Color(39, 174, 96));
-        }
-
+        // 7. Populate Question and Buttons
         questionArea.setText(currentQuestion.questionText);
 
-        btnA.setEnabled(true); btnB.setEnabled(true); btnC.setEnabled(true); btnD.setEnabled(true);
-        if (currentQuestion.options.size() >= 4) {
-            btnA.setText(currentQuestion.options.get(0));
-            btnB.setText(currentQuestion.options.get(1));
-            btnC.setText(currentQuestion.options.get(2));
-            btnD.setText(currentQuestion.options.get(3));
+        QuizOptionButton[] buttons = {btnA, btnB, btnC, btnD};
+        for (int i = 0; i < buttons.length; i++) {
+            buttons[i].setEnabled(true);
+            if (currentQuestion.options.size() > i) {
+                buttons[i].setText(currentQuestion.options.get(i));
+            }
         }
+
+        // 8. Handle Timer
         if (userSelectedTime > 0) {
             startNewTimer();
         } else {
             timerLabel.setText("Timer: Off");
+        }
+    }
+
+    private List<QuizItem> getPoolByLevel(String level) {
+        switch (level) {
+            case "EXPERT":      return expertQuestions;
+            case "HARD":        return hardQuestions;
+            case "MEDIUM-HARD": return mediumHardQuestions;
+            case "MEDIUM":      return mediumQuestions;
+            case "EASY-MEDIUM": return easyMediumQuestions;
+            case "EASY":        return easyQuestions;
+            default:            return easyQuestions;
+        }
+    }
+
+    private List<QuizItem> findFirstAvailablePool(String preferredLevel) {
+        // Priority order for searching if the preferred one is empty
+        String[] levels = {"EXPERT", "HARD", "MEDIUM-HARD", "MEDIUM", "EASY-MEDIUM", "EASY"};
+        for (String lvl : levels) {
+            List<QuizItem> p = getPoolByLevel(lvl);
+            if (p != null && !p.isEmpty()) return p;
+        }
+        return null;
+    }
+
+    private void updateDifficultyLabelColor(String level) {
+        switch (level) {
+            case "EXPERT":      difficultyLabel.setForeground(new Color(155, 89, 182)); break; // Purple
+            case "HARD":        difficultyLabel.setForeground(new Color(231, 76, 60));  break; // Red
+            case "MEDIUM-HARD": difficultyLabel.setForeground(new Color(230, 126, 34)); break; // Orange
+            case "MEDIUM":      difficultyLabel.setForeground(new Color(241, 196, 15)); break; // Yellow
+            case "EASY-MEDIUM": difficultyLabel.setForeground(new Color(171, 235, 198)); break; // Light Green
+            case "EASY":        difficultyLabel.setForeground(new Color(46, 204, 113));  break; // Green
         }
     }
 
@@ -1116,30 +1925,28 @@ public class OfflineTutorApp extends JFrame {
 
     // --- LOGIC: SCANNING ---
     private void performScan() {
-        // 1. Capture current settings from the UI
+        // 1. Capture current settings
         selectedSubject = (String) subjectDropdown.getSelectedItem();
         currentBannedTopics = SUBJECT_BAN_LISTS.get(selectedSubject);
 
-        // NEW LOGIC: Time is now set via the CircularTimer interaction, not a dropdown.
-        // userSelectedTime is updated automatically when you drag the clock.
         if (userSelectedTime <= 0) {
-            // Optional: Default to a specific time if user didn't drag the clock
-            // userSelectedTime = 60;
+            // Optional default: userSelectedTime = 600; // 10 mins
         }
 
-        // 2. Open File Chooser
+        // 2. File Chooser
         JFileChooser chooser = new JFileChooser();
         chooser.setFileFilter(new FileNameExtensionFilter("Documents (PDF, JPG, PNG)", "pdf", "jpg", "png", "jpeg"));
 
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             File selectedFile = chooser.getSelectedFile();
-            aiStatusLabel.setText("Processing... Please Wait.");
-
-            // Reset question counter for the new scan
+            difficultyLabel.setText("Initializing Engine...");
             questionCounter = 0;
+            currentQuestion = null; // Important: Clear previous question state
 
             new Thread(() -> {
                 try {
+                    // --- STEP 1: OCR / PDF EXTRACTION ---
+                    SwingUtilities.invokeLater(() -> difficultyLabel.setText("Reading Document..."));
                     StringBuilder extractedText = new StringBuilder();
                     String fileName = selectedFile.getName().toLowerCase();
 
@@ -1153,27 +1960,24 @@ public class OfflineTutorApp extends JFrame {
                         extractedText.append(tesseract.doOCR(cleanFile));
                     }
 
-                    // Generate the questions from extracted text
+                    // --- STEP 2: PARALLEL AI GENERATION ---
+                    // We update the UI to let the user know the AI is now "Thinking"
+                    SwingUtilities.invokeLater(() -> difficultyLabel.setText("AI is generating first questions..."));
+
+                    // This call now triggers multiple background threads (Parallel Batching)
                     generateMCQ(extractedText.toString());
 
+                    // Note: We don't put the 'loadNextQuestion' here anymore because
+                    // generateMCQ's internal threads will call it the moment they finish!
+
                     SwingUtilities.invokeLater(() -> {
-                        if (easyQuestions.isEmpty() && hardQuestions.isEmpty()) {
-                            aiStatusLabel.setText("No valid topics found on this page.");
-                            JOptionPane.showMessageDialog(this, "The AI couldn't find enough text. Please try a clearer scan.");
-                        } else {
-                            aiStatusLabel.setText("Scan Complete!");
-
-                            // SYNC THE CLOCK: Ensure the visual clock matches the selected time
-                            clockTimer.setSeconds(userSelectedTime);
-
-                            // START THE QUIZ & TIMER
-                            loadNextQuestion(true);
-                            startNewTimer();
-                        }
+                        // Sync the visual clock to user's choice
+                        clockTimer.setSeconds(userSelectedTime);
                     });
+
                 } catch (Exception ex) {
                     ex.printStackTrace();
-                    SwingUtilities.invokeLater(() -> aiStatusLabel.setText("Error: " + ex.getMessage()));
+                    SwingUtilities.invokeLater(() -> difficultyLabel.setText("Scan Error: " + ex.getMessage()));
                 }
             }).start();
         }
@@ -1255,7 +2059,7 @@ public class OfflineTutorApp extends JFrame {
 
             for (int i = 0; i < document.getNumberOfPages(); i++) {
                 final int pageNum = i + 1;
-                SwingUtilities.invokeLater(() -> aiStatusLabel.setText("Scanning Page " + pageNum + "..."));
+                SwingUtilities.invokeLater(() -> difficultyLabel.setText("Scanning Page " + pageNum + "..."));
 
                 // 1. Try to extract digital text
                 org.apache.pdfbox.text.PDFTextStripper stripper = new org.apache.pdfbox.text.PDFTextStripper();
@@ -1301,76 +2105,174 @@ public class OfflineTutorApp extends JFrame {
 
     // --- GENERATION WITH PLURAL FILTER ---
     // --- SMART GENERATION: DEFINITION & CONCEPT DETECTION ---
-    private void generateMCQ(String text) throws Exception {
+    private void generateMCQ(String rawText) throws Exception {
+        // 1. Clear previous session data
         easyQuestions.clear();
+        easyMediumQuestions.clear();
+        mediumQuestions.clear();
+        mediumHardQuestions.clear();
         hardQuestions.clear();
+        expertQuestions.clear();
         askedQuestionIDs.clear();
 
+        // 2. Prepare text
+        String text = cleanGarbage(rawText);
+        if (text.length() > 2500) {
+            text = text.substring(0, 2500) + "...";
+        }
+        final String contextText = text;
+
+        // --- THREAD 1: FAST TRACK (EASY & MEDIUM) ---
+        // Goal: Get the quiz started ASAP
+        new Thread(() -> {
+            try {
+                String prompt = "Generate exactly 3 MCQs from this text. Difficulty: EASY or MEDIUM. " +
+                        "Return ONLY a JSON array: [{\"question\":\"\", \"options\":[], \"correctAnswer\":\"\", \"difficulty\":\"\"}]";
+
+                fetchAndPopulate(contextText, prompt);
+
+                // If this is the first batch back, start the quiz immediately
+                SwingUtilities.invokeLater(() -> {
+                    if (currentQuestion == null && !easyQuestions.isEmpty()) {
+                        loadNextQuestion("EASY");
+                    }
+                });
+            } catch (Exception e) {
+                System.err.println("Fast Track Gen Error: " + e.getMessage());
+            }
+        }).start();
+
+        // --- THREAD 2: DEEP TRACK (HARD & EXPERT) ---
+        // Goal: Populate the later stages of the quiz in the background
+        new Thread(() -> {
+            try {
+                String prompt = "Generate exactly 3 deep-thinking MCQs. Difficulty: HARD or EXPERT. " +
+                        "Return ONLY a JSON array with: question, options, correctAnswer, difficulty.";
+
+                fetchAndPopulate(contextText, prompt);
+
+                SwingUtilities.invokeLater(() -> {
+                    updateStatus("AI Engine: All difficulty tiers loaded.");
+                });
+            } catch (Exception e) {
+                System.err.println("Deep Track Gen Error: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    private void fetchAndPopulate(String text, String customPrompt) throws Exception {
+        // 1. Capture the exact count the user wants from the UI spinner
+        int totalTarget = (int) questionCountSpinner.getValue();
+
+        // 2. Parallel Load Balancing: Each thread generates half the total
+        // We use a ceiling or Math.max to ensure we don't request 0 questions
+        int batchSize = (totalTarget / 2) + (totalTarget % 2);
+        if (batchSize < 1) batchSize = 1;
+
+        // 3. Requesting JSON from local Ollama instance
+        // Passing the batchSize ensures the AI knows when to stop
+        String jsonResponse = llamaConnection.generateMCQs(text, customPrompt, batchSize);
+
+        // 4. Robust Parsing
+        JsonArray questionsArray = JsonParser.parseString(jsonResponse).getAsJsonArray();
+
+        for (int i = 0; i < questionsArray.size(); i++) {
+            JsonObject qObj = questionsArray.get(i).getAsJsonObject();
+
+            String question = qObj.get("question").getAsString();
+            String correctAnswer = qObj.get("correctAnswer").getAsString();
+            String difficulty = qObj.get("difficulty").getAsString().toUpperCase();
+
+            List<String> options = new ArrayList<>();
+            JsonArray optsArray = qObj.get("options").getAsJsonArray();
+            for (int j = 0; j < optsArray.size(); j++) {
+                options.add(optsArray.get(j).getAsString());
+            }
+
+            // Create the QuizItem with the dynamic data
+            QuizItem item = new QuizItem(question, question, correctAnswer, options, text);
+
+            // 5. Thread-Safe Pool Management
+            // Essential because FastGen and DeepGen threads finish at unpredictable times
+            synchronized(askedQuestionIDs) {
+                if (!askedQuestionIDs.contains(item.id)) {
+                    if (difficulty.contains("EXPERT")) expertQuestions.add(item);
+                    else if (difficulty.contains("HARD")) hardQuestions.add(item);
+                    else if (difficulty.contains("MEDIUM-HARD")) mediumHardQuestions.add(item);
+                    else if (difficulty.contains("MEDIUM")) mediumQuestions.add(item);
+                    else if (difficulty.contains("EASY-MEDIUM")) easyMediumQuestions.add(item);
+                    else easyQuestions.add(item);
+
+                    askedQuestionIDs.add(item.id);
+                }
+            }
+        }
+
+        // UI Update: Notify the user that a batch is ready
+        SwingUtilities.invokeLater(() -> {
+            updateStatus("Batch sync complete. Pools updated.");
+        });
+    }
+
+    // Fallback method using the old rule-based approach
+    private void generateMCQFallback(String text) throws Exception {
         TokenizerModel tokenModel = new TokenizerModel(new FileInputStream("en-token.bin"));
         Tokenizer tokenizer = new TokenizerME(tokenModel);
         POSModel posModel = new POSModel(new FileInputStream("en-pos-maxent.bin"));
         POSTaggerME tagger = new POSTaggerME(posModel);
 
-        // Cleanup text
-        text = text.replace("\n", " ").replace("  ", " ");
         String[] sentences = text.split("(?<=[.?!])\\s+");
 
-        // PHASE 1: Find Important Topics (High Frequency Nouns)
+        // PHASE 1: Identify Key Concepts (Nouns with frequency)
         Map<String, Integer> wordFrequency = new HashMap<>();
         for (String sentence : sentences) {
+            if (!isSentenceLogical(sentence)) continue;
+
             String[] words = tokenizer.tokenize(sentence);
             String[] tags = tagger.tag(words);
             for (int i = 0; i < words.length; i++) {
-                String w = words[i];
-                if (w.length() < 4) continue;
-                if (currentBannedTopics.contains(w.toLowerCase())) continue;
-                if (tags[i].startsWith("NN")) wordFrequency.put(w, wordFrequency.getOrDefault(w, 0) + 1);
+                String w = words[i].toLowerCase();
+                if (w.length() < 6 || currentBannedTopics.contains(w)) continue;
+
+                if (tags[i].startsWith("NN")) {
+                    wordFrequency.put(words[i], wordFrequency.getOrDefault(words[i], 0) + 1);
+                }
             }
         }
         List<String> validTopics = new ArrayList<>(wordFrequency.keySet());
 
-        // PHASE 2: GENERATE SMART QUESTIONS
+        // PHASE 2: Generate Questions based on Smart Strategies
         for (int i = 0; i < sentences.length; i++) {
-            String sentence = sentences[i];
+            String sentence = sentences[i].trim();
+            if (!isSentenceLogical(sentence)) continue;
 
-            // Filter Meta-Talk
             boolean isMeta = false;
             for (String meta : META_PHRASES) if (sentence.toLowerCase().contains(meta)) isMeta = true;
-            if (isMeta || sentence.length() < 25) continue;
+            if (isMeta) continue;
 
             String qText = null;
             String answer = null;
 
-            // --- STRATEGY A: "DEFINITION" DETECTION (High Value) ---
-            // Detects: "X is called Y" or "X is defined as Y"
+            // STRATEGY A: Definition Detection
             if (sentence.contains(" is called ") || sentence.contains(" is known as ") || sentence.contains(" is defined as ")) {
                 for (String topic : validTopics) {
-                    // If the sentence talks about a topic appearing AFTER the definition phrase
                     if (sentence.contains(topic) && sentence.indexOf(topic) > sentence.indexOf(" is ")) {
                         answer = topic;
-                        // Transform: "The bending of light is called refraction."
-                        // To: "What is the term for 'The bending of light'?"
-                        String prompt = sentence.substring(0, sentence.indexOf(" is "));
-                        qText = "What concept is described by the following definition?\n\n\"" + prompt + "...\"";
+                        String definitionPart = sentence.substring(0, sentence.indexOf(" is "));
+                        qText = "What concept is described by the following definition?\n\n\"" + definitionPart + "...\"";
                         break;
                     }
                 }
             }
 
-            // --- STRATEGY B: "KEYWORD" DETECTION (Medium Value) ---
-            // Only if Strategy A failed, fallback to standard Cloze Deletion
-            // --- STRATEGY B: CONCEPT IDENTIFICATION (Better Formatting) ---
+            // STRATEGY B: Contextual identification
             if (qText == null) {
                 for (String topic : validTopics) {
                     if (sentence.contains(topic)) {
                         answer = topic;
-
-                        // Instead of hiding the word inside the sentence,
-                        // show the full sentence and ask what it refers to.
                         qText = "Based on the text, what key concept is being discussed in this sentence?\n\n" +
-                                "\"" + sentence.trim() + "\"";
+                                "\"" + sentence + "\"";
 
-                        // Add Context if the sentence starts with a pronoun
                         if (sentence.matches("^(This|It|These|That).*") && i > 0) {
                             qText = "Context: " + sentences[i-1] + "\n\n" + qText;
                         }
@@ -1379,30 +2281,64 @@ public class OfflineTutorApp extends JFrame {
                 }
             }
 
-            // Create the Question Object
+            // PHASE 3: Assign to one of 6 Difficulty Tiers
             if (qText != null && answer != null) {
                 List<String> options = new ArrayList<>();
                 options.add(answer);
-                // Smart Distractors: Pick other topics from the SAME text
-                for(int k=0; k<3; k++) {
-                    if (!validTopics.isEmpty()) {
-                        String dist = validTopics.get((int)(Math.random() * validTopics.size()));
-                        if (!options.contains(dist) && !dist.equalsIgnoreCase(answer)) options.add(dist);
+
+                Collections.shuffle(validTopics);
+                for (String dist : validTopics) {
+                    if (options.size() < 4 && !dist.equalsIgnoreCase(answer)) {
+                        options.add(dist);
                     }
                 }
-                while(options.size() < 4) options.add("None of the above");
+                while (options.size() < 4) options.add("General Concept");
                 Collections.shuffle(options);
 
-                // This has 5 arguments: (qText, displaySentence, answer, options, originalContext)
                 QuizItem item = new QuizItem(qText, sentence, answer, options, sentence);
                 if (!askedQuestionIDs.contains(item.id)) {
-                    if (qText.startsWith("What concept")) hardQuestions.add(item); // Definitions are harder
-                    else easyQuestions.add(item);
+                    String lowerS = sentence.toLowerCase();
+                    String lowerQ = qText.toLowerCase();
+
+                    if (lowerQ.contains("described by") && lowerS.contains("defined as")) {
+                        expertQuestions.add(item); // Really Hard
+                    } else if (lowerQ.contains("described by")) {
+                        hardQuestions.add(item);   // Hard
+                    } else if (lowerS.contains(" because ") || lowerS.contains(" therefore ")) {
+                        mediumHardQuestions.add(item);
+                    } else if (sentence.length() > 120) {
+                        mediumQuestions.add(item);
+                    } else if (sentence.length() > 80) {
+                        easyMediumQuestions.add(item);
+                    } else {
+                        easyQuestions.add(item);
+                    }
                 }
             }
         }
-        Collections.shuffle(easyQuestions);
-        Collections.shuffle(hardQuestions);
+    }
+
+    private String cleanGarbage(String text) {
+        // Removes things like "18-Jun-21", "2:27:39 PM", "indd", "Reprint 2025-26"
+        String cleaned = text.replaceAll("(?i)\\b\\d{1,2}-[a-z]{3}-\\d{2,4}\\b", ""); // Dates
+        cleaned = cleaned.replaceAll("(?i)\\b\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:AM|PM)?\\b", ""); // Time
+        cleaned = cleaned.replaceAll("(?i)\\b(?:chapter|indd|reprint|page|edition|version)\\b", ""); // Metadata words
+        cleaned = cleaned.replaceAll("\\d{4}-\\d{2,4}", ""); // Year ranges
+        return cleaned.trim();
+    }
+
+    private boolean isSentenceLogical(String sentence) {
+        // A logical educational sentence should be long enough and not just numbers/symbols
+        if (sentence.length() < 45) return false;
+
+        long digitCount = sentence.chars().filter(Character::isDigit).count();
+        // If more than 15% of the sentence is numbers, it's likely a page header/footer
+        if ((double) digitCount / sentence.length() > 0.15) return false;
+
+        // Must contain common 'teaching' verbs to be a good question candidate
+        String lower = sentence.toLowerCase();
+        return lower.contains(" is ") || lower.contains(" are ") ||
+                lower.contains(" refers ") || lower.contains(" means ") || lower.contains(" used ");
     }
 
     private void saveProgress() {
@@ -1658,29 +2594,29 @@ public class OfflineTutorApp extends JFrame {
         }
     }
 
+    // --- UNIFIED & CORRECTED DASHBOARD CLASS ---
     private class PaLOHomePage extends JDialog {
-        public PaLOHomePage(Frame owner) {
-            // Tie this dialog to the main OfflineTutorApp frame as its modal owner
-            super(owner, true);
+        private JPanel topBar;
+        private JPanel centerArea;
+        private JPanel bottomBar;
 
-            // --- WINDOW CONFIGURATION ---
+        public PaLOHomePage(Frame owner) {
+            // Set modality to false to prevent blocking initialization threads
+            // that keep the taskbar icon alive.
+            super(owner, false);
             setUndecorated(false);
             setTitle("PaLO - Student Dashboard");
             setSize(1200, 750);
-            setLocationRelativeTo(owner);
+            setLocationRelativeTo(null);
 
-            // FIX: Behavior for the Windows "X" button
-            // Ensures that if the dashboard is closed, the main app frame is restored
             setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
             addWindowListener(new java.awt.event.WindowAdapter() {
                 @Override
                 public void windowClosing(java.awt.event.WindowEvent e) {
                     if (getOwner() != null) {
-                        // Only restore the main window if there is an active session state
                         if (questionCounter > 0) {
-                            getOwner().setVisible(true);
+                            closeAndSwitch(); // Ensure we snap back if closed manually
                         } else {
-                            // If no quiz is running, closing the dashboard prompts for full exit
                             int response = JOptionPane.showConfirmDialog(null,
                                     "Exit PaLO entirely?", "Confirm Exit", JOptionPane.YES_NO_OPTION);
                             if (response == JOptionPane.YES_OPTION) System.exit(0);
@@ -1689,12 +2625,11 @@ public class OfflineTutorApp extends JFrame {
                 }
             });
 
-            // --- BACKGROUND WITH DARK TINT ---
             BackgroundPanel bgPanel = new BackgroundPanel("homepage_bg.gif");
             bgPanel.setLayout(new BorderLayout());
 
             // --- TOPBAR ---
-            JPanel topBar = new JPanel(new BorderLayout());
+            topBar = new JPanel(new BorderLayout());
             topBar.setOpaque(false);
             topBar.setBorder(BorderFactory.createEmptyBorder(30, 60, 0, 60));
 
@@ -1704,48 +2639,38 @@ public class OfflineTutorApp extends JFrame {
             JPanel topTrailingArea = new JPanel();
             topTrailingArea.setLayout(new BoxLayout(topTrailingArea, BoxLayout.Y_AXIS));
             topTrailingArea.setOpaque(false);
-
             topTrailingArea.add(createLiveClock());
-            topTrailingArea.add(Box.createRigidArea(new Dimension(0, 25))); // Moves exit button down
+            topTrailingArea.add(Box.createRigidArea(new Dimension(0, 25)));
             topTrailingArea.add(createBigQuitButton());
-
             topBar.add(welcome, BorderLayout.WEST);
             topBar.add(topTrailingArea, BorderLayout.EAST);
 
-            // --- CENTER AREA ---
-            JPanel centerArea = new JPanel(new GridBagLayout());
+            // --- CENTER AREA (Analytics) ---
+            centerArea = new JPanel(new GridBagLayout());
             centerArea.setOpaque(false);
             GridBagConstraints gbc = new GridBagConstraints();
-
-            JPanel leftSpacer = new JPanel();
-            leftSpacer.setOpaque(false);
-            gbc.gridx = 0; gbc.weightx = 0.45; gbc.anchor = GridBagConstraints.NORTHWEST;
-            centerArea.add(leftSpacer, gbc);
 
             GlassCardPanel analyticalCard = new GlassCardPanel();
             analyticalCard.setLayout(new BoxLayout(analyticalCard, BoxLayout.Y_AXIS));
 
             ProgressGraphPanel graph = new ProgressGraphPanel();
-
-            // Dynamic analysis label using student history logic
             JLabel analysisLabel = new JLabel("<html><body style='width: 350px; text-align: center;'>" +
                     calculateTrend() + "</body></html>");
             analysisLabel.setFont(new Font("Segoe UI Light", Font.PLAIN, 15));
             analysisLabel.setForeground(Color.WHITE);
             analysisLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-            analyticalCard.add(createLegend()); // Legend Method Fixed
+            analyticalCard.add(createLegend());
             analyticalCard.add(graph);
             analyticalCard.add(Box.createRigidArea(new Dimension(0, 15)));
             analyticalCard.add(analysisLabel);
 
-            gbc.gridx = 1; gbc.weightx = 0.55;
-            gbc.anchor = GridBagConstraints.NORTHEAST;
-            gbc.insets = new Insets(20, 0, 0, 60);
+            gbc.gridx = 1; gbc.weightx = 1.0;
+            gbc.anchor = GridBagConstraints.CENTER;
             centerArea.add(analyticalCard, gbc);
 
-            // --- BOTTOMBAR: Buttons with Specific Hover Colours ---
-            JPanel bottomBar = new JPanel(new BorderLayout());
+            // --- BOTTOMBAR (Direct Navigation) ---
+            bottomBar = new JPanel(new BorderLayout());
             bottomBar.setOpaque(false);
             bottomBar.setBorder(BorderFactory.createEmptyBorder(0, 60, 60, 60));
 
@@ -1757,27 +2682,19 @@ public class OfflineTutorApp extends JFrame {
             JPanel studyGroup = new JPanel(new FlowLayout(FlowLayout.RIGHT, 20, 0));
             studyGroup.setOpaque(false);
 
-            // FIX: Re-entry logic using getOwner() to restore the hidden frame
-            studyGroup.add(createGlowButton("OFFLINE STUDY", new Color(46, 204, 113), e -> {
-                isAudioMode = false;
-                dispose(); // Close homepage
-                if (getOwner() != null) {
-                    getOwner().setVisible(true); // Show hidden Quiz Window
-                    getOwner().toFront();
-                    // If the session was ended, immediately trigger the scan dialog for the user
-                    if (questionCounter == 0) {
-                        ((OfflineTutorApp)getOwner()).performScan();
-                    }
-                }
+            studyGroup.add(createGlowButton("TALK TO AI", new Color(155, 89, 182), e -> {
+                isChatMode = true; isAudioMode = false;
+                closeAndSwitch();
             }));
 
-            studyGroup.add(createGlowButton("AUDIO ASSISTED MODE", new Color(52, 152, 219), e -> {
-                isAudioMode = true;
-                dispose();
-                if (getOwner() != null) {
-                    getOwner().setVisible(true);
-                    getOwner().toFront();
-                }
+            studyGroup.add(createGlowButton("AUDIO MODE", new Color(52, 152, 219), e -> {
+                isChatMode = false; isAudioMode = true;
+                closeAndSwitch();
+            }));
+
+            studyGroup.add(createGlowButton("OFFLINE STUDY", new Color(46, 204, 113), e -> {
+                isChatMode = false; isAudioMode = false;
+                closeAndSwitch();
             }));
 
             bottomBar.add(utilityGroup, BorderLayout.WEST);
@@ -1791,30 +2708,140 @@ public class OfflineTutorApp extends JFrame {
             SwingUtilities.invokeLater(graph::startAnimation);
         }
 
-        // --- SUPPORTING METHODS ---
+        /**
+         * Replaces animateAndTransition.
+         * Handles instant mode switching and window restoration.
+         */
+        private void closeAndSwitch() {
+            OfflineTutorApp mainApp = (OfflineTutorApp)getOwner();
+            if (mainApp != null) {
+                // 1. CONFIGURE THE CORRECT CARD
+                // Switches the main view to Quiz, Chat, or Audio mode
+                if (isChatMode) {
+                    mainApp.switchToChatMode();
+                } else if (isAudioMode) {
+                    mainApp.switchToAudioMode();
+                } else {
+                    mainApp.switchToQuizMode();
+                }
 
-        // FIXED: Added missing createLegend method
-        private JPanel createLegend() {
-            JPanel legend = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-            legend.setOpaque(false);
-            JLabel dot = new JLabel("● ");
-            dot.setForeground(currentAccentColor);
-            JLabel text = new JLabel("Mastery Achievement (%)  ");
-            text.setForeground(Color.WHITE);
-            text.setFont(new Font("Segoe UI Bold", Font.PLAIN, 11));
-            legend.add(dot); legend.add(text);
-            return legend;
+                // 2. SNAP BACK TO CENTER
+                // IMPORTANT: We removed setOpacity(1.0f) here because it crashes decorated frames.
+                // This method moves the window from its off-screen parking spot (-4000)
+                // back to the center of your monitor.
+                mainApp.setLocationRelativeTo(null);
+
+                // 3. BRING TO FOCUS
+                mainApp.setVisible(true);
+                mainApp.toFront();
+                mainApp.requestFocus();
+
+                // 4. REFRESH UI
+                mainApp.revalidate();
+                mainApp.repaint();
+            }
+
+            // 5. CLOSE DASHBOARD
+            this.dispose();
         }
 
-        // FIXED: Included calculateTrend within the scope to prevent compilation error
+        private void launchDeepFocusMode() {
+            JDialog focusDialog = new JDialog(this, true);
+            focusDialog.setUndecorated(true);
+            Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
+            focusDialog.setBounds(0, 0, screen.width, screen.height);
+
+            BackgroundPanel focusBG = new BackgroundPanel("assets/focus_bg.jpg");
+            focusBG.setLayout(new GridBagLayout());
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.insets = new Insets(15, 15, 15, 15);
+
+            JLabel title = new JLabel("SELECT YOUR FOCUS PATH");
+            title.setFont(new Font("Segoe UI Black", Font.BOLD, 36));
+            title.setForeground(Color.WHITE);
+            gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 2;
+            focusBG.add(title, gbc);
+
+            gbc.gridwidth = 1;
+
+            JButton pBtn = createTechniqueButton("POMODORO", "25m Work • 5m Rest", new Color(255, 45, 85));
+            pBtn.addActionListener(e -> startFocusSession(focusDialog, 25, 5));
+            gbc.gridy = 1; gbc.gridx = 0; focusBG.add(pBtn, gbc);
+
+            JButton fBtn = createTechniqueButton("FLOW STATE", "90m Deep Work • 15m Rest", new Color(0, 220, 255));
+            fBtn.addActionListener(e -> startFocusSession(focusDialog, 90, 15));
+            gbc.gridx = 1; focusBG.add(fBtn, gbc);
+
+            JButton rBtn = createTechniqueButton("52 / 17 RULE", "Science-backed Productivity", new Color(46, 204, 113));
+            rBtn.addActionListener(e -> startFocusSession(focusDialog, 52, 17));
+            gbc.gridy = 2; gbc.gridx = 0; focusBG.add(rBtn, gbc);
+
+            JButton cBtn = createTechniqueButton("CUSTOM ZEN", "Set your own intervals", new Color(255, 200, 0));
+            cBtn.addActionListener(e -> {
+                String work = JOptionPane.showInputDialog("Work Minutes:");
+                String rest = JOptionPane.showInputDialog("Rest Minutes:");
+                try {
+                    startFocusSession(focusDialog, Integer.parseInt(work), Integer.parseInt(rest));
+                } catch(Exception ex) {}
+            });
+            gbc.gridx = 1; focusBG.add(cBtn, gbc);
+
+            JButton back = new JButton("BACK TO MENU");
+            back.setForeground(Color.GRAY);
+            back.setContentAreaFilled(false);
+            back.addActionListener(e -> focusDialog.dispose());
+            gbc.gridy = 3; gbc.gridx = 0; gbc.gridwidth = 2;
+            focusBG.add(back, gbc);
+
+            focusDialog.add(focusBG);
+            focusDialog.setVisible(true);
+        }
+
         private String calculateTrend() {
-            if (studentHistory.size() < 2) return "Awaiting more session data to map trends.";
+            if (studentHistory.size() < 2) return "Start your first session to see performance insights.";
+
             float last = studentHistory.get(studentHistory.size() - 1);
             float prev = studentHistory.get(studentHistory.size() - 2);
             float diff = (last - prev) * 100;
-            if (diff > 0) return "Mastery increased by <font color='#2ecc71'>+" + String.format("%.1f", diff) + "%</font>. Excellent growth!";
-            if (diff < 0) return "Performance dipped by <font color='#ff2d55'>" + String.format("%.1f", Math.abs(diff)) + "%</font>. Review weak areas.";
-            return "Performance is stable. Your consistency is showing!";
+
+            if (diff > 0) {
+                return "Your score increased by <font color='#2ecc71'>" + String.format("%.1f", diff) + "%</font>. Excellent growth!";
+            } else if (diff < 0) {
+                return "Your score dipped by <font color='#e74c3c'>" + String.format("%.1f", Math.abs(diff)) + "%</font>. Review previous topics.";
+            } else {
+                return "Stability maintained. Aim for a 5% increase in your next session.";
+            }
+        }
+
+        private JLabel createLiveClock() {
+            JLabel label = new JLabel();
+            label.setFont(new Font("Segoe UI Semibold", Font.PLAIN, 22));
+            label.setForeground(Color.WHITE);
+            label.setAlignmentX(Component.RIGHT_ALIGNMENT);
+            new javax.swing.Timer(1000, e -> label.setText(new java.text.SimpleDateFormat("hh:mm:ss a").format(new java.util.Date()))).start();
+            return label;
+        }
+
+        private JButton createBigQuitButton() {
+            JButton btn = new JButton("EXIT APPLICATION");
+            btn.setFont(new Font("Segoe UI", Font.BOLD, 12));
+            btn.setForeground(new Color(255, 255, 255, 150));
+            btn.setContentAreaFilled(false);
+            btn.setBorder(BorderFactory.createLineBorder(new Color(255, 255, 255, 50)));
+            btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            btn.addActionListener(e -> System.exit(0));
+            return btn;
+        }
+
+        private JPanel createLegend() {
+            JPanel p = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+            p.setOpaque(false);
+            JLabel dot = new JLabel("● ");
+            dot.setForeground(currentAccentColor);
+            JLabel txt = new JLabel("Mastery Progress  ");
+            txt.setForeground(Color.WHITE);
+            p.add(dot); p.add(txt);
+            return p;
         }
 
         private JButton createGlowButton(String text, Color glowColor, java.awt.event.ActionListener action) {
@@ -1823,17 +2850,15 @@ public class OfflineTutorApp extends JFrame {
                 protected void paintComponent(Graphics g) {
                     Graphics2D g2 = (Graphics2D) g.create();
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
                     if (getModel().isRollover()) {
                         g2.setColor(new Color(glowColor.getRed(), glowColor.getGreen(), glowColor.getBlue(), 80));
                         g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
-                        g2.setStroke(new BasicStroke(3.0f));
+                        g2.setStroke(new BasicStroke(2.5f));
                         g2.setColor(glowColor);
                     } else {
                         g2.setStroke(new BasicStroke(1.5f));
-                        g2.setColor(new Color(255, 255, 255, 120));
+                        g2.setColor(new Color(255, 255, 255, 100));
                     }
-
                     g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 15, 15);
                     g2.dispose();
                     super.paintComponent(g);
@@ -1849,227 +2874,8 @@ public class OfflineTutorApp extends JFrame {
             btn.addActionListener(action);
             return btn;
         }
+    }// --- END OF PaLOHomePage ---
 
-        private JButton createBigQuitButton() {
-            JButton btn = new JButton("EXIT APPLICATION") {
-                @Override
-                protected void paintComponent(Graphics g) {
-                    Graphics2D g2 = (Graphics2D) g.create();
-                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
-                    if (getModel().isRollover()) {
-                        g2.setColor(new Color(255, 45, 85, 220));
-                        g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
-                        g2.setStroke(new BasicStroke(2.5f));
-                        g2.setColor(Color.WHITE);
-                    } else {
-                        g2.setColor(new Color(255, 255, 255, 30));
-                        g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
-                        g2.setStroke(new BasicStroke(1.5f));
-                        g2.setColor(new Color(255, 255, 255, 120));
-                    }
-
-                    g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 15, 15);
-                    super.paintComponent(g);
-                    g2.dispose();
-                }
-            };
-            btn.setFont(new Font("Segoe UI", Font.BOLD, 14));
-            btn.setForeground(Color.WHITE);
-            btn.setPreferredSize(new Dimension(200, 50));
-            btn.setMaximumSize(new Dimension(200, 50));
-            btn.setContentAreaFilled(false);
-            btn.setBorderPainted(false);
-            btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-            btn.setAlignmentX(Component.RIGHT_ALIGNMENT);
-            btn.addActionListener(e -> {
-                int confirm = JOptionPane.showConfirmDialog(this, "Do you want to quit?", "Confirm Exit", 0);
-                if (confirm == 0) System.exit(0);
-            });
-            return btn;
-        }
-
-        private JPanel createLiveClock() {
-            JPanel clockPanel = new JPanel();
-            clockPanel.setLayout(new BoxLayout(clockPanel, BoxLayout.Y_AXIS));
-            clockPanel.setOpaque(false);
-
-            JLabel timeLabel = new JLabel();
-            timeLabel.setFont(new Font("Segoe UI Semibold", Font.PLAIN, 26));
-            timeLabel.setForeground(Color.WHITE);
-            timeLabel.setAlignmentX(Component.RIGHT_ALIGNMENT);
-
-            JLabel dateLabel = new JLabel();
-            dateLabel.setFont(new Font("Segoe UI", Font.PLAIN, 14));
-            dateLabel.setForeground(new Color(220, 220, 220));
-            dateLabel.setAlignmentX(Component.RIGHT_ALIGNMENT);
-
-            java.text.SimpleDateFormat timeFmt = new java.text.SimpleDateFormat("hh:mm:ss a");
-            java.text.SimpleDateFormat dateFmt = new java.text.SimpleDateFormat("EEEE, MMM dd, yyyy");
-
-            new javax.swing.Timer(1000, e -> {
-                java.util.Date now = new java.util.Date();
-                timeLabel.setText(timeFmt.format(now));
-                dateLabel.setText(dateFmt.format(now).toUpperCase());
-            }).start();
-
-            clockPanel.add(timeLabel);
-            clockPanel.add(dateLabel);
-            return clockPanel;
-        }
-
-        // --- INNER COMPONENTS ---
-
-        private class GlassCardPanel extends JPanel {
-            public GlassCardPanel() {
-                setOpaque(false);
-                setBorder(BorderFactory.createEmptyBorder(25, 25, 25, 25));
-            }
-            @Override
-            protected void paintComponent(Graphics g) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setColor(new Color(0, 0, 0, 140));
-                g2.fillRoundRect(10, 10, getWidth() - 20, getHeight() - 20, 35, 35);
-                g2.setColor(new Color(15, 15, 15, 220));
-                g2.fillRoundRect(0, 0, getWidth() - 10, getHeight() - 10, 35, 35);
-                GradientPaint glow = new GradientPaint(0, 0, new Color(255, 255, 255, 50), getWidth(), getHeight(), new Color(255, 255, 255, 10));
-                g2.setPaint(glow); g2.setStroke(new BasicStroke(1.5f));
-                g2.drawRoundRect(0, 0, getWidth() - 10, getHeight() - 10, 35, 35);
-                g2.dispose();
-                super.paintComponent(g);
-            }
-        }
-
-        private class BackgroundPanel extends JPanel {
-            private ImageIcon gifIcon;
-            public BackgroundPanel(String path) {
-                java.io.File f = new java.io.File(path);
-                if(f.exists()) this.gifIcon = new ImageIcon(path);
-            }
-            @Override
-            protected void paintComponent(Graphics g) {
-                super.paintComponent(g);
-                Graphics2D g2 = (Graphics2D) g.create();
-                if (gifIcon != null) g2.drawImage(gifIcon.getImage(), 0, 0, getWidth(), getHeight(), this);
-                g2.setColor(new Color(0, 0, 0, 110));
-                g2.fillRect(0, 0, getWidth(), getHeight());
-                g2.dispose();
-            }
-        }
-    }
-
-    private String calculateTrend() {
-        if (studentHistory.size() < 2) return "Start your first session to see performance insights.";
-
-        float last = studentHistory.get(studentHistory.size() - 1);
-        float prev = studentHistory.get(studentHistory.size() - 2);
-        float diff = (last - prev) * 100;
-
-        if (diff > 0) {
-            return "Your score increased by <font color='#2ecc71'>" + String.format("%.1f", diff) + "%</font>. Excellent growth!";
-        } else if (diff < 0) {
-            return "Your score dipped by <font color='#e74c3c'>" + String.format("%.1f", Math.abs(diff)) + "%</font>. Review previous topics.";
-        } else {
-            return "Stability maintained. Aim for a 5% increase in your next session.";
-        }
-    }
-
-    private JButton createAestheticButton(String text, Color accent) {
-        JButton btn = new JButton(text);
-        btn.setFont(new Font("Segoe UI Semibold", Font.PLAIN, 16));
-        btn.setForeground(Color.WHITE);
-        btn.setBackground(new Color(40, 40, 40, 180)); // Default semi-transparent dark
-        btn.setOpaque(false);
-        btn.setBorder(BorderFactory.createLineBorder(new Color(255, 255, 255, 50)));
-
-        btn.addMouseListener(new java.awt.event.MouseAdapter() {
-            @Override
-            public void mouseEntered(java.awt.event.MouseEvent e) {
-                // Animation: Light up with color
-                btn.setBackground(accent);
-                btn.setOpaque(true);
-                btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-            }
-
-            @Override
-            public void mouseExited(java.awt.event.MouseEvent e) {
-                // Return to subtle glass look
-                btn.setBackground(new Color(40, 40, 40, 180));
-                btn.setOpaque(false);
-            }
-        });
-        return btn;
-    }
-
-    private void initAI() {
-        try {
-            Path modelPath = Paths.get("tutor_brain.pt");
-            Model model = Model.newInstance("AdaptiveTutor");
-            model.load(modelPath);
-            this.predictor = model.newPredictor(new TutorTranslator());
-        } catch (Exception e) {}
-    }
-
-    private void launchDeepFocusMode() {
-        JDialog focusDialog = new JDialog(this, true);
-        focusDialog.setUndecorated(true);
-        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
-        focusDialog.setBounds(0, 0, screen.width, screen.height);
-
-        BackgroundPanel focusBG = new BackgroundPanel("assets/focus_bg.jpg");
-        focusBG.setLayout(new GridBagLayout());
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(15, 15, 15, 15);
-
-        // Title
-        JLabel title = new JLabel("SELECT YOUR FOCUS PATH");
-        title.setFont(new Font("Segoe UI Black", Font.BOLD, 36));
-        title.setForeground(Color.WHITE);
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 2;
-        focusBG.add(title, gbc);
-
-        // --- TECHNIQUE BUTTONS ---
-        gbc.gridwidth = 1;
-
-        // 1. Pomodoro
-        JButton pBtn = createTechniqueButton("POMODORO", "25m Work • 5m Rest", new Color(255, 45, 85));
-        pBtn.addActionListener(e -> startFocusSession(focusDialog, 25, 5));
-        gbc.gridy = 1; gbc.gridx = 0; focusBG.add(pBtn, gbc);
-
-        // 2. Flow State
-        JButton fBtn = createTechniqueButton("FLOW STATE", "90m Deep Work • 15m Rest", new Color(0, 220, 255));
-        fBtn.addActionListener(e -> startFocusSession(focusDialog, 90, 15));
-        gbc.gridx = 1; focusBG.add(fBtn, gbc);
-
-        // 3. Rule of 52/17
-        JButton rBtn = createTechniqueButton("52 / 17 RULE", "Science-backed Productivity", new Color(46, 204, 113));
-        rBtn.addActionListener(e -> startFocusSession(focusDialog, 52, 17));
-        gbc.gridy = 2; gbc.gridx = 0; focusBG.add(rBtn, gbc);
-
-        // 4. Custom Zen
-        JButton cBtn = createTechniqueButton("CUSTOM ZEN", "Set your own intervals", new Color(255, 200, 0));
-        cBtn.addActionListener(e -> {
-            // Show input dialogs for custom time
-            String work = JOptionPane.showInputDialog("Work Minutes:");
-            String rest = JOptionPane.showInputDialog("Rest Minutes:");
-            try {
-                startFocusSession(focusDialog, Integer.parseInt(work), Integer.parseInt(rest));
-            } catch(Exception ex) {}
-        });
-        gbc.gridx = 1; focusBG.add(cBtn, gbc);
-
-        // Exit Button
-        JButton back = new JButton("BACK TO MENU");
-        back.setForeground(Color.GRAY);
-        back.setContentAreaFilled(false);
-        back.addActionListener(e -> focusDialog.dispose());
-        gbc.gridy = 3; gbc.gridx = 0; gbc.gridwidth = 2;
-        focusBG.add(back, gbc);
-
-        focusDialog.add(focusBG);
-        focusDialog.setVisible(true);
-    }
 
     private void startFocusSession(JDialog dialog, int workMins, int restMins) {
         dialog.getContentPane().removeAll();
@@ -2312,12 +3118,54 @@ public class OfflineTutorApp extends JFrame {
     }
 
     private static class TutorTranslator implements Translator<float[], Float> {
+        private final int FIXED_SEQUENCE_LENGTH = 10;
+
+        @Override
         public NDList processInput(TranslatorContext ctx, float[] input) {
             NDManager manager = ctx.getNDManager();
-            return new NDList(manager.create(input).reshape(1, input.length, 1));
+
+            // 1. Create a fixed-size buffer filled with neutral values (0.5)
+            float[] paddedInput = new float[FIXED_SEQUENCE_LENGTH];
+            Arrays.fill(paddedInput, 0.5f);
+
+            // 2. Fill the buffer with the most recent scores from the end
+            // This ensures the LSTM always receives exactly 10 time steps.
+            int startIdx = Math.max(0, input.length - FIXED_SEQUENCE_LENGTH);
+            int fillCount = Math.min(input.length, FIXED_SEQUENCE_LENGTH);
+
+            System.arraycopy(input, startIdx, paddedInput, FIXED_SEQUENCE_LENGTH - fillCount, fillCount);
+
+            // 3. Reshape for LSTM: [Batch Size (1), Time Steps (10), Features (1)]
+            return new NDList(manager.create(paddedInput).reshape(1, FIXED_SEQUENCE_LENGTH, 1));
         }
+
+        @Override
         public Float processOutput(TranslatorContext ctx, NDList list) {
+            // DJL returns an NDArray; singletonOrThrow gets the single probability value
             return list.singletonOrThrow().getFloat();
+        }
+    }
+
+    private void setAppIcon() {
+        try {
+            // Path to your logo file
+            File iconFile = new File("logo.png");
+            if (iconFile.exists()) {
+                BufferedImage img = ImageIO.read(iconFile);
+                this.setIconImage(img);
+            } else {
+                System.out.println("Taskbar icon not found at: " + iconFile.getAbsolutePath());
+            }
+        } catch (Exception e) {
+            System.err.println("Could not load app icon: " + e.getMessage());
+        }
+    }
+
+    private void resetButtonStyles() {
+        // Reset buttons to their default state (matching your createOptionButton styling)
+        QuizOptionButton[] buttons = {btnA, btnB, btnC, btnD};
+        for (QuizOptionButton btn : buttons) {
+            btn.resetVisual();
         }
     }
 
