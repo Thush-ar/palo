@@ -1,16 +1,13 @@
 import ai.djl.Model;
-import java.util.regex.Pattern;
+import java.awt.Frame;
+import javax.swing.JDialog;
 import ai.djl.inference.Predictor;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
 import ai.djl.translate.Translator;
 import ai.djl.translate.TranslatorContext;
+import com.google.gson.JsonElement;
 import net.sourceforge.tess4j.Tesseract;
-import opennlp.tools.postag.POSModel;
-import opennlp.tools.postag.POSTaggerME;
-import opennlp.tools.tokenize.Tokenizer;
-import opennlp.tools.tokenize.TokenizerME;
-import opennlp.tools.tokenize.TokenizerModel;
 import javax.swing.table.DefaultTableModel;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -20,18 +17,15 @@ import java.awt.GradientPaint;
 import java.awt.BasicStroke;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
-
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.Clip;
-import javax.sound.sampled.*;
 import java.io.File;
 import javax.imageio.ImageIO;
 import javax.swing.*;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.awt.image.BufferedImage;
-import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -44,26 +38,31 @@ import java.util.Map;
 import java.util.Scanner;
 import java.util.Set;
 import java.util.Arrays;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import com.google.gson.JsonArray;
+import dev.langchain4j.model.output.structured.Description;
+import java.util.List;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 public class OfflineTutorApp extends JFrame {
 
-
     // --- GUI Components ---
-
     private JComboBox<String> subjectDropdown;
-    private JComboBox<String> timerDropdown;
     private JTextArea questionArea;
     private JLabel aiStatusLabel;
     private JLabel difficultyLabel;
-    private JProgressBar masteryBar;
     private QuizOptionButton btnA, btnB, btnC, btnD;
     private JLabel imageViewer;
-    private Clip zenClip; // Stores the audio stream for lo-fi beats
+    private Clip zenClip;
+    private VoiceAssistant tts;
+    private boolean isSpeechEnabled = true;
 
-    // Chat UI components
+    public void setSpeechEnabled(boolean enabled) { this.isSpeechEnabled = enabled; }
+    public boolean isSpeechEnabled() { return isSpeechEnabled; }
+    public VoiceAssistant getTTS() { return tts; }
+
     private JTextArea chatArea;
     private JTextField chatInput;
     private JButton sendButton;
@@ -74,65 +73,121 @@ public class OfflineTutorApp extends JFrame {
     private JPanel quizPanel;
     private JPanel chatPanel;
     private JPanel audioPanel;
-    private JPanel currentPanel;
+    private JPanel focusPanel;
+    private JProgressBar loadingBar;
+    private JPanel loadingOverlay;
 
     // --- Logic & Data ---
+    public String customUserName = "";
+    private PaLOHomePage homePageInstance;
+    private List<JsonObject> recentFilesList = new ArrayList<>();
     private Predictor<float[], Float> predictor;
+    private JButton btnScan;
+    private JLabel countLabel;
+    private float currentProbability = 0.0f;
     private List<Float> studentHistory = new ArrayList<>();
-    // Logic & Data
+    private List<QuizItem> reviewFlashcards = new ArrayList<>();
+    public List<QuizItem> getReviewFlashcards() { return reviewFlashcards; }
     private String currentLevel = "EASY";
     private List<QuizItem> easyQuestions = new ArrayList<>();
     private List<QuizItem> easyMediumQuestions = new ArrayList<>();
     private List<QuizItem> mediumQuestions = new ArrayList<>();
     private List<QuizItem> mediumHardQuestions = new ArrayList<>();
     private List<QuizItem> hardQuestions = new ArrayList<>();
-    private List<QuizItem> expertQuestions = new ArrayList<>(); // "Really Hard"
+    private List<QuizItem> expertQuestions = new ArrayList<>();
     private Set<String> askedQuestionIDs = new HashSet<>();
     private List<QuizItem> sessionLog = new ArrayList<>();
     private QuizItem currentQuestion;
-
-
-    // --- Logic & Data ---
-    private int questionCounter = 0; // New variable to track question number
-
-    // --- Timer Components ---
+    private JButton btnConfigQuiz;
+    private int targetTheoryCount = 10;
+    private int targetNumericalCount = 0;
+    private boolean numericalModeActive = false;
+    private int questionCounter = 0;
     private javax.swing.Timer quizTimer;
     private int secondsRemaining;
-    private int userSelectedTime = 0; // 0 means no timer
+    private int userSelectedTime = 0;
     private JLabel timerLabel;
+    private CircleMasteryPanel homeCircleMastery;
+    private QuizMasteryRing quizMasteryRing;
+    private JPanel masteryContainer;
+    private CircularTimer clockTimer;
+    private JSpinner questionCountSpinner;
+    private boolean isAudioMode = false;
+    private boolean isChatMode = false;
+    private LlamaConnection llamaConnection;
+    private JPanel chatBox;
+    private JPanel recentChatsPanel;
+    private static final Map<String, ThemePreset> PRESETS = new java.util.LinkedHashMap<>();
+    static {
+        PRESETS.put("Emerald Forest", new ThemePreset(new Color(22, 68, 54), new Color(28, 28, 28), new Color(0, 150, 136), true, "Emerald Light"));
+        PRESETS.put("Emerald Light", new ThemePreset(new Color(210, 230, 220), new Color(245, 247, 245), new Color(0, 150, 136), false, "Emerald Forest"));
+        PRESETS.put("Midnight Coffee", new ThemePreset(new Color(45, 35, 30), new Color(15, 15, 15), new Color(180, 140, 100), true, "Latte"));
+        PRESETS.put("Latte", new ThemePreset(new Color(235, 225, 215), new Color(250, 248, 245), new Color(140, 100, 60), false, "Midnight Coffee"));
+        PRESETS.put("Deep Space", new ThemePreset(new Color(20, 25, 45), new Color(10, 10, 15), new Color(100, 120, 255), true, "Arctic Breeze"));
+        PRESETS.put("Arctic Breeze", new ThemePreset(new Color(220, 230, 255), new Color(245, 250, 255), new Color(50, 100, 200), false, "Deep Space"));
+        PRESETS.put("Purple Night", new ThemePreset(new Color(35, 25, 50), new Color(20, 15, 30), new Color(155, 89, 182), true, "Lavender Dream"));
+        PRESETS.put("Lavender Dream", new ThemePreset(new Color(240, 230, 255), new Color(252, 250, 255), new Color(155, 89, 182), false, "Purple Night"));
+    }
 
+    private static class ThemePreset {
+        final Color side, main, accent;
+        final boolean isDark;
+        final String counterpart;
 
-
-    private class GlassCardPanel extends JPanel {
-        public GlassCardPanel() {
-            setOpaque(false);
-            // Added padding to ensure the graph isn't cramped against the 3D edges
-            setBorder(BorderFactory.createEmptyBorder(25, 25, 25, 25));
+        ThemePreset(Color s, Color m, Color a, boolean dark, String cp) {
+            this.side = s; this.main = m; this.accent = a; this.isDark = dark; this.counterpart = cp;
         }
+    }
 
-        @Override
-        protected void paintComponent(Graphics g) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+    private String currentThemeName = "Emerald Forest";
+    public Color sidebarColor = new Color(22, 68, 54);
+    public Color windowColor = new Color(28, 28, 28);
+    public Color currentAccentColor = new Color(0, 150, 136);
+    private List<String> currentBannedTopics = new ArrayList<>();
+    private String selectedSubject = "General";
+    private static final Map<String, List<String>> SUBJECT_BAN_LISTS = new HashMap<>();
 
-            // 1. DRAW DROP SHADOW (The 3D "Pop" effect)
-            g2.setColor(new Color(0, 0, 0, 120)); // Darker shadow for more depth
-            g2.fillRoundRect(10, 10, getWidth() - 20, getHeight() - 20, 35, 35);
+    static {
+        SUBJECT_BAN_LISTS.put("Physics", Arrays.asList("figure", "table", "shown", "medium", "media", "value", "values", "constant", "constants", "diagram", "consider", "angle", "angles", "solution", "example", "direction", "magnitude", "ray", "rays", "index", "indices"));
+        SUBJECT_BAN_LISTS.put("Computer Science", Arrays.asList("figure", "output", "input", "code", "program", "example", "shown", "value", "values", "variable", "variables", "line", "following", "statement"));
+        SUBJECT_BAN_LISTS.put("Biology", Arrays.asList("figure", "diagram", "shown", "structure", "structures", "function", "process", "example", "type", "types", "part", "parts"));
+        SUBJECT_BAN_LISTS.put("General", Arrays.asList("figure", "table", "shown", "example", "problem", "solution", "chapter"));
+    }
 
-            // 2. DRAW CARD BACKGROUND (Semi-transparent Dark Glass)
-            g2.setColor(new Color(20, 20, 20, 210));
-            g2.fillRoundRect(0, 0, getWidth() - 10, getHeight() - 10, 35, 35);
+    // --- THEME HELPER ---
+    public boolean isDarkMode() {
+        if (UIManager.getLookAndFeel() == null) return true;
+        return UIManager.getLookAndFeel().getClass().getName().contains("Dark");
+    }
 
-            // 3. DRAW INNER GLOW BORDER (Creates the glass edge effect)
-            GradientPaint glassGlow = new GradientPaint(0, 0, new Color(255, 255, 255, 60),
-                    getWidth(), getHeight(), new Color(255, 255, 255, 10));
-            g2.setPaint(glassGlow);
-            g2.setStroke(new BasicStroke(1.8f));
-            g2.drawRoundRect(0, 0, getWidth() - 10, getHeight() - 10, 35, 35);
+    public OfflineTutorApp() {
+        tts = new VoiceAssistant();
+        SplashScreen splash = new SplashScreen();
+        splash.setVisible(true);
 
-            g2.dispose();
-            super.paintComponent(g);
-        }
+        new Thread(() -> {
+            try {
+                initAI();
+                loadProgress();
+                loadRecentFiles();
+                llamaConnection = new LlamaConnection();
+                Thread.sleep(2500);
+
+                SwingUtilities.invokeLater(() -> {
+                    splash.dispose();
+                    initializeIntegratedUI();
+                    setupLoadingOverlay();
+                    setGlassPane(loadingOverlay);
+                    setAppIcon();
+                    setSize(1400, 850);
+                    this.setLocationRelativeTo(null);
+                    homePageInstance = new PaLOHomePage(this);
+                    homePageInstance.setVisible(true);
+                });
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
     }
 
     // Lightweight wrapper around JButton to keep option-specific styling and feedback
@@ -144,8 +199,6 @@ public class OfflineTutorApp extends JFrame {
         public QuizOptionButton(String text, Color themeColor) {
             super(text);
             this.themeColor = themeColor;
-
-            // Basic properties
             setForeground(Color.WHITE);
             setPreferredSize(new Dimension(0, 110));
             setFocusPainted(false);
@@ -153,23 +206,15 @@ public class OfflineTutorApp extends JFrame {
             setContentAreaFilled(false);
             setOpaque(false);
             setCursor(new Cursor(Cursor.HAND_CURSOR));
-
-            // Initial text formatting
             updateTextAndFont(text);
-
             addActionListener(e -> checkAnswer(this));
         }
 
-        /**
-         * Accommodates long text by using HTML for wrapping and
-         * dynamic font sizing based on character count.
-         */
         private void updateTextAndFont(String text) {
-            int fontSize = 22; // Default
+            int fontSize = 22;
             if (text.length() > 80) fontSize = 14;
             else if (text.length() > 40) fontSize = 17;
 
-            // Using HTML to force multi-line wrapping inside the button
             String htmlText = "<html><body style='width: 250px; text-align: center; " +
                     "font-family: Segoe UI Semibold; font-size: " + fontSize + "pt;'>" +
                     text + "</body></html>";
@@ -177,18 +222,14 @@ public class OfflineTutorApp extends JFrame {
         }
 
         @Override
-        public void setText(String text) {
-            updateTextAndFont(text);
-        }
+        public void setText(String text) { updateTextAndFont(text); }
 
         @Override
         protected void paintComponent(Graphics g) {
             Graphics2D g2 = (Graphics2D) g.create();
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-            // Determine Background Color
             if (currentFeedbackColor != null) {
-                // Success Glow or Blink State
                 g2.setColor(isBlinking ? new Color(30, 30, 30, 180) : currentFeedbackColor);
             } else if (getModel().isRollover()) {
                 g2.setColor(new Color(themeColor.getRed(), themeColor.getGreen(), themeColor.getBlue(), 120));
@@ -197,8 +238,6 @@ public class OfflineTutorApp extends JFrame {
             }
 
             g2.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
-
-            // Border
             g2.setColor(Color.WHITE);
             g2.setStroke(new BasicStroke(1.5f));
             g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 20, 20);
@@ -207,18 +246,12 @@ public class OfflineTutorApp extends JFrame {
             g2.dispose();
         }
 
-        /**
-         * Turns the button Emerald Green to signify the correct answer.
-         */
         public void setCorrectGlow() {
             this.currentFeedbackColor = new Color(46, 204, 113, 200);
             this.isBlinking = false;
             repaint();
         }
 
-        /**
-         * Makes the button blink Red to signify an incorrect choice.
-         */
         public void startErrorBlink() {
             this.currentFeedbackColor = new Color(231, 76, 60, 200);
             javax.swing.Timer blinkTimer = new javax.swing.Timer(200, null);
@@ -227,10 +260,8 @@ public class OfflineTutorApp extends JFrame {
                 isBlinking = !isBlinking;
                 repaint();
             });
-
             blinkTimer.start();
 
-            // Stop blinking after 1.2 seconds (approx 3 blinks)
             new javax.swing.Timer(1200, e -> {
                 blinkTimer.stop();
                 isBlinking = false;
@@ -246,95 +277,11 @@ public class OfflineTutorApp extends JFrame {
         }
     }
 
-
-
-    private class ModeSelectionScreen extends JDialog {
-        public ModeSelectionScreen(Frame owner) {
-            super(owner, "PaLO - Select Orchestration Mode", true);
-            setUndecorated(true);
-            setSize(850, 450);
-            setLocationRelativeTo(owner);
-
-            // Main Background Panel with a subtle gradient-like dark color
-            JPanel mainPanel = new JPanel(new BorderLayout());
-            mainPanel.setBackground(new Color(18, 18, 18));
-            mainPanel.setBorder(BorderFactory.createLineBorder(new Color(45, 45, 45), 2));
-
-            // Header Label
-            JLabel header = new JLabel("Select Mode", SwingConstants.CENTER);
-            header.setFont(new Font("Monospace", Font.BOLD, 22));
-            header.setForeground(Color.WHITE);
-            header.setBorder(BorderFactory.createEmptyBorder(30, 0, 10, 0));
-            mainPanel.add(header, BorderLayout.NORTH);
-
-            // Container for the 3 Cards
-            JPanel cardContainer = new JPanel(new GridLayout(1, 3, 25, 0));
-            cardContainer.setBackground(new Color(18, 18, 18));
-            cardContainer.setBorder(BorderFactory.createEmptyBorder(30, 40, 50, 40));
-
-            // Create the three options with specific accent colors
-            JButton btnScan = createModernCard("Scan Pages", "📄", "Analyze textbook pages in a jiffy!", new Color(46, 204, 113));
-            JButton btnAudio = createModernCard("Audio Assisted", "🔊", "Interactive voice mode for the differently abled", new Color(52, 152, 219));
-            JButton btnTalk = createModernCard("Talk to AI", "🤖", "Chat with Llama about your subjects", new Color(155, 89, 182));
-
-            btnScan.addActionListener(e -> { isAudioMode = false; isChatMode = false; dispose(); });
-            btnAudio.addActionListener(e -> { isAudioMode = true; isChatMode = false; dispose(); });
-            btnTalk.addActionListener(e -> { isAudioMode = false; isChatMode = true; dispose(); });
-
-            cardContainer.add(btnScan);
-            cardContainer.add(btnAudio);
-            cardContainer.add(btnTalk);
-
-            mainPanel.add(cardContainer, BorderLayout.CENTER);
-            add(mainPanel);
-        }
-
-        private JButton createModernCard(String title, String icon, String subtitle, Color accentColor) {
-            String content = "<html><center>" +
-                    "<font size='7' color='" + toHex(accentColor) + "'>" + icon + "</font><br><br>" +
-                    "<font size='5' color='white'><b>" + title + "</b></font><br>" +
-                    "<font size='3' color='#888888'>" + subtitle + "</font>" +
-                    "</center></html>";
-
-            JButton b = new JButton(content);
-            b.setFocusPainted(false);
-            b.setContentAreaFilled(false); // We will draw our own background
-            b.setOpaque(false);
-            b.setForeground(Color.WHITE);
-            b.setCursor(new Cursor(Cursor.HAND_CURSOR));
-
-            // Custom Card Border and Background
-            b.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createLineBorder(new Color(40, 40, 40), 1, true),
-                    BorderFactory.createEmptyBorder(20, 10, 20, 10)
-            ));
-
-            // Hover and Animation Effects
-            b.addMouseListener(new java.awt.event.MouseAdapter() {
-                public void mouseEntered(java.awt.event.MouseEvent e) {
-                    if (b.isEnabled()) {
-                        b.setBackground(new Color(35, 35, 35));
-                        b.setBorder(BorderFactory.createLineBorder(accentColor, 1, true));
-                        b.setOpaque(true);
-                    }
-                }
-                public void mouseExited(java.awt.event.MouseEvent e) {
-                    b.setOpaque(false);
-                    b.setBorder(BorderFactory.createLineBorder(new Color(40, 40, 40), 1, true));
-                }
-            });
-
-            return b;
-        }
-
-        private String toHex(Color color) {
-            return String.format("#%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
-        }
-    }
-
     class CircleMasteryPanel extends JPanel {
-        private int progress = 0;
-
+        private int progress = 10;
+        public CircleMasteryPanel() {
+            setOpaque(false);
+        }
         public void setProgress(int p) {
             this.progress = p;
             repaint();
@@ -346,33 +293,107 @@ public class OfflineTutorApp extends JFrame {
             Graphics2D g2 = (Graphics2D) g;
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-            int size = Math.min(getWidth(), getHeight()) - 20;
-            int x = (getWidth() - size) / 2;
-            int y = (getHeight() - size) / 2;
+            boolean isDark = false;
+            if (UIManager.getLookAndFeel() != null) {
+                isDark = UIManager.getLookAndFeel().getClass().getName().contains("Dark");
+            }
 
-            // Background Track
-            g2.setStroke(new BasicStroke(12, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            g2.setColor(new Color(50, 50, 50));
-            g2.drawOval(x, y, size, size);
+            int w = getWidth();
+            int h = getHeight();
 
-            // Progress Arc
-            g2.setColor(new Color(46, 204, 113));
-            g2.drawArc(x, y, size, size, 90, -(int)(progress * 3.6));
+            int availableHeight = h - 40;
+            int diameter = Math.min(w, availableHeight) - 20;
 
-            // Center Text
-            String txt = progress + "%";
-            g2.setFont(new Font("Segoe UI", Font.BOLD, 24));
+            if (diameter < 0) diameter = 0;
+
+            int x = (w - diameter) / 2;
+            int y = (availableHeight - diameter) / 2 + 5;
+
+            g2.setStroke(new BasicStroke(12f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setColor(new Color(currentAccentColor.getRed(), currentAccentColor.getGreen(), currentAccentColor.getBlue(), 40));
+            g2.drawArc(x, y, diameter, diameter, 225, -270);
+
+            g2.setColor(currentAccentColor);
+            int arcAngle = (int) ((progress / 100.0) * 270);
+            g2.drawArc(x, y, diameter, diameter, 225, -arcAngle);
+
+            g2.setColor(isDark ? Color.WHITE : Color.BLACK);
+            g2.setFont(new Font("Segoe UI", Font.BOLD, 36));
             FontMetrics fm = g2.getFontMetrics();
-            int tx = (getWidth() - fm.stringWidth(txt)) / 2;
-            int ty = (getHeight() / 2) + (fm.getAscent() / 3);
-            g2.drawString(txt, tx, ty);
+            String bigText = progress + "%";
+            int textX = x + (diameter - fm.stringWidth(bigText)) / 2;
+            int textY = y + (diameter / 2) + 10;
+            g2.drawString(bigText, textX, textY);
+
+            g2.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+            g2.setColor(isDark ? new Color(200, 200, 200) : new Color(80, 80, 80));
+            String subText = "Solved";
+            fm = g2.getFontMetrics();
+            g2.drawString(subText, x + (diameter - fm.stringWidth(subText)) / 2, textY + 30);
+
+            g2.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+            g2.setColor(isDark ? Color.GRAY : new Color(100, 100, 100));
+            String bottomText = "0 Attempting";
+            fm = g2.getFontMetrics();
+            g2.drawString(bottomText, x + (diameter - fm.stringWidth(bottomText)) / 2, y + diameter + 30);
         }
     }
+    // NEW: Dedicated Mastery Ring for the Quiz Sidebar (Transparent & Color-Adaptive)
+    class QuizMasteryRing extends JPanel {
+        private int progress = 10;
+        private Color ringColor = new Color(46, 204, 113); // Default Green
 
+        public QuizMasteryRing() {
+            setOpaque(false); // Makes the background perfectly match the sidebar
+            setPreferredSize(new Dimension(160, 160));
+            setMaximumSize(new Dimension(160, 160));
+        }
+
+        public void setProgress(int p, Color c) {
+            this.progress = p;
+            this.ringColor = c;
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g;
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            boolean isDark = UIManager.getLookAndFeel() != null && UIManager.getLookAndFeel().getClass().getName().contains("Dark");
+
+            int w = getWidth();
+            int h = getHeight();
+            int strokeWidth = 14; // Thickness of the ring
+            int diameter = Math.min(w, h) - (strokeWidth * 2);
+            int x = (w - diameter) / 2;
+            int y = (h - diameter) / 2;
+
+            // Draw Background Track
+            g2.setStroke(new BasicStroke(strokeWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setColor(isDark ? new Color(60, 60, 60) : new Color(220, 220, 220));
+            g2.drawArc(x, y, diameter, diameter, 0, 360);
+
+            // Draw Dynamic Colored Foreground Arc
+            g2.setColor(ringColor);
+            int arcAngle = (int) ((progress / 100.0) * 360);
+            g2.drawArc(x, y, diameter, diameter, 90, -arcAngle); // 90 starts at top dead center
+
+            // Center Percentage Text
+            g2.setColor(isDark ? Color.WHITE : Color.BLACK);
+            g2.setFont(new Font("Segoe UI", Font.BOLD, 36));
+            String bigText = progress + "%";
+            FontMetrics fm = g2.getFontMetrics();
+            int textX = x + (diameter - fm.stringWidth(bigText)) / 2;
+            int textY = y + (diameter / 2) + (fm.getAscent() / 3) + 2;
+            g2.drawString(bigText, textX, textY);
+        }
+    }
     private static class QuizItem {
         String id;
         String questionText;
-        String displaySentence; // Store the original, unedited sentence here
+        String displaySentence;
         String correctAnswer;
         String userProvidedAnswer = "";
         List<String> options;
@@ -388,118 +409,32 @@ public class OfflineTutorApp extends JFrame {
         }
     }
 
-    // --- SUBJECT SPECIFIC STOP WORDS ---
-    private List<String> currentBannedTopics = new ArrayList<>();
-    private String selectedSubject = "General";
-    // --- META-LANGUAGE FILTER (Bans "Classroom Talk") ---
-    private static final List<String> META_PHRASES = Arrays.asList(
-            "let us", "we will", "we shall", "in this chapter", "in this section",
-            "study about", "discuss about", "consider the", "refer to", "look at",
-            "as mentioned", "following is", "note that", "is given by", "shown in"
-    );
-    private static final Map<String, List<String>> SUBJECT_BAN_LISTS = new HashMap<>();
-    static {
-        // Physics: Added "media", "values", "constants", "rays"
-        SUBJECT_BAN_LISTS.put("Physics", Arrays.asList(
-                "figure", "table", "shown", "medium", "media", "value", "values",
-                "constant", "constants", "diagram", "consider", "angle", "angles",
-                "solution", "example", "direction", "magnitude", "ray", "rays", "index", "indices"
-        ));
-
-        // Computer Science
-        SUBJECT_BAN_LISTS.put("Computer Science", Arrays.asList(
-                "figure", "output", "input", "code", "program", "example", "shown",
-                "value", "values", "variable", "variables", "line", "following", "statement"
-        ));
-
-        // Biology
-        SUBJECT_BAN_LISTS.put("Biology", Arrays.asList(
-                "figure", "diagram", "shown", "structure", "structures", "function",
-                "process", "example", "type", "types", "part", "parts"
-        ));
-
-        // General
-        SUBJECT_BAN_LISTS.put("General", Arrays.asList(
-                "figure", "table", "shown", "example", "problem", "solution", "chapter"
-        ));
-    }
-
     private class BackgroundPanel extends JPanel {
         private ImageIcon gifIcon;
-
-        // Use a String parameter to accept the path
         public BackgroundPanel(String path) {
             File f = new File(path);
-            if (f.exists()) {
-                this.gifIcon = new ImageIcon(path);
-            }
+            if (f.exists()) this.gifIcon = new ImageIcon(path);
             setOpaque(false);
         }
-
         @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
             Graphics2D g2 = (Graphics2D) g.create();
-            if (gifIcon != null) {
-                g2.drawImage(gifIcon.getImage(), 0, 0, getWidth(), getHeight(), this);
-            }
-            // Dark Tint Overlay for minimalist look
+            if (gifIcon != null) g2.drawImage(gifIcon.getImage(), 0, 0, getWidth(), getHeight(), this);
             g2.setColor(new Color(0, 0, 0, 110));
             g2.fillRect(0, 0, getWidth(), getHeight());
             g2.dispose();
         }
     }
 
-    // Define this as a proper inner class so the casting works
-    private class ModernToggle extends JButton {
-        private boolean active = false;
-        private String label;
-
-        public ModernToggle(String label) {
-            this.label = label;
-            setText(label + ": OFF");
-            setFont(new Font("Segoe UI Bold", Font.PLAIN, 12));
-            setForeground(Color.WHITE);
-            setPreferredSize(new Dimension(140, 40));
-            setContentAreaFilled(false);
-            setBorderPainted(false);
-            setFocusPainted(false);
-            setCursor(new Cursor(Cursor.HAND_CURSOR));
-        }
-
-        public void toggle() {
-            active = !active;
-            setText(label + (active ? ": ON" : ": OFF"));
-            repaint();
-        }
-
-        public boolean isActive() { return active; }
-
-        @Override
-        protected void paintComponent(Graphics g) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
-            // Background: If active, use theme color, else dark gray
-            g2.setColor(active ? currentAccentColor : new Color(255, 255, 255, 30));
-            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 25, 25);
-
-            // The Sliding White Knob
-            g2.setColor(Color.WHITE);
-            int knobSize = getHeight() - 10;
-            int x = active ? (getWidth() - knobSize - 5) : 5;
-            g2.fillOval(x, 5, knobSize, knobSize);
-
-            super.paintComponent(g);
-            g2.dispose();
-        }
-    }
-
     class CircularTimer extends JComponent {
         private int seconds = 0;
-        private final int MAX_SECONDS = 3600; // 60 minutes max
-        private final int INCREMENT = 300; // 5 minute steps
+        private final int MAX_SECONDS = 3600;
+        private final int INCREMENT = 300;
         private boolean isRunning = false;
+        private boolean isEditable = true;
+
+        public void setEditable(boolean editable) { this.isEditable = editable; } // <-- NEW SETTER
 
         public CircularTimer() {
             setPreferredSize(new Dimension(220, 220));
@@ -509,28 +444,20 @@ public class OfflineTutorApp extends JFrame {
             MouseAdapter ma = new MouseAdapter() {
                 @Override
                 public void mousePressed(MouseEvent e) {
-                    // Trigger custom input if clicking near the center circle
-                    if (e.getPoint().distance(getWidth()/2.0, getHeight()/2.0) < 45) {
-                        showCustomInputDialog();
-                    }
+                    if (!isEditable) return;
+                    if (e.getPoint().distance(getWidth()/2.0, getHeight()/2.0) < 45) showCustomInputDialog();
                 }
-
                 @Override
                 public void mouseDragged(MouseEvent e) {
-                    if (isRunning) return;
-
+                    if (isRunning || !isEditable) return;
                     double dx = e.getX() - getWidth() / 2.0;
                     double dy = e.getY() - getHeight() / 2.0;
                     double angle = Math.atan2(dy, dx);
-
                     double normalized = (angle + Math.PI / 2.0) / (2.0 * Math.PI);
                     if (normalized < 0) normalized += 1.0;
-
                     int rawSeconds = (int) (normalized * MAX_SECONDS);
                     seconds = (rawSeconds / INCREMENT) * INCREMENT;
-
                     if (seconds == 0 && normalized > 0.1) seconds = MAX_SECONDS;
-
                     userSelectedTime = seconds;
                     repaint();
                 }
@@ -552,9 +479,7 @@ public class OfflineTutorApp extends JFrame {
         }
 
         public void setSeconds(int s) { this.seconds = s; repaint(); }
-        public int getSeconds() {
-            return this.seconds;
-        }
+        public int getSeconds() { return this.seconds; }
         public void setRunning(boolean r) { this.isRunning = r; }
 
         @Override
@@ -564,62 +489,57 @@ public class OfflineTutorApp extends JFrame {
 
             int centerX = getWidth() / 2;
             int centerY = getHeight() / 2;
-            int radius = Math.min(getWidth(), getHeight()) / 2 - 20;
+            int radius = Math.min(getWidth(), getHeight()) / 2 - 25;
+            Color themeColor = (isRunning && seconds > 0 && seconds <= 60) ? new Color(255, 45, 85) : currentAccentColor;
 
-            // --- THEME-REACTIVE COLOR LOGIC ---
-            // Priority 1: Red Warning if timer < 60s and running
-            // Priority 2: Use the Global Accent Color selected in Settings
-            Color themeColor;
-            if (isRunning && seconds > 0 && seconds <= 60) {
-                themeColor = new Color(255, 45, 85); // Critical Red
-            } else {
-                themeColor = currentAccentColor; // Reactive Global Theme
-            }
-
-            // 1. DRAW ANALOG TICK MARKS
             for (int i = 0; i < 60; i++) {
                 double angle = Math.toRadians(i * 6 - 90);
                 int lineStart = (i % 5 == 0) ? radius - 12 : radius - 6;
                 g2.setColor(i % 5 == 0 ? new Color(255, 255, 255, 180) : new Color(255, 255, 255, 60));
                 g2.setStroke(new BasicStroke(i % 5 == 0 ? 2f : 1f));
-
-                int x1 = (int) (centerX + lineStart * Math.cos(angle));
-                int y1 = (int) (centerY + lineStart * Math.sin(angle));
-                int x2 = (int) (centerX + radius * Math.cos(angle));
-                int y2 = (int) (centerY + radius * Math.sin(angle));
-                g2.drawLine(x1, y1, x2, y2);
+                g2.drawLine((int)(centerX + lineStart * Math.cos(angle)), (int)(centerY + lineStart * Math.sin(angle)),
+                        (int)(centerX + radius * Math.cos(angle)), (int)(centerY + radius * Math.sin(angle)));
             }
 
-            // 2. DRAW PROGRESS ARC & GLOW
             int extent = (int) (((double) seconds / MAX_SECONDS) * 360);
-            // Neon Glow
             g2.setStroke(new BasicStroke(12, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             g2.setColor(new Color(themeColor.getRed(), themeColor.getGreen(), themeColor.getBlue(), 40));
             g2.drawArc(centerX - radius, centerY - radius, radius * 2, radius * 2, 90, -extent);
-            // Sharp Arc
+
             g2.setStroke(new BasicStroke(6, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             g2.setColor(themeColor);
             g2.drawArc(centerX - radius, centerY - radius, radius * 2, radius * 2, 90, -extent);
 
-            // 3. DRAW MOVING HAND KNOB
-            double handAngle = Math.toRadians(((double) seconds / MAX_SECONDS * 360) - 90);
-            int handX = (int) (centerX + radius * Math.cos(handAngle));
-            int handY = (int) (centerY + radius * Math.sin(handAngle));
+            if (isRunning) {
+                double minAngle = Math.toRadians(((double) seconds / MAX_SECONDS * 360) - 90);
+                int mHandLen = radius - 20;
+                g2.setColor(Color.WHITE);
+                g2.setStroke(new BasicStroke(4, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g2.drawLine(centerX, centerY, (int)(centerX + mHandLen * Math.cos(minAngle)), (int)(centerY + mHandLen * Math.sin(minAngle)));
 
+                int currentSecOfMin = seconds % 60;
+                double secAngle = Math.toRadians((currentSecOfMin * 6) - 90);
+                int sHandLen = radius - 10;
+                g2.setColor(new Color(255, 45, 85));
+                g2.setStroke(new BasicStroke(2, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g2.drawLine(centerX, centerY, (int)(centerX + sHandLen * Math.cos(secAngle)), (int)(centerY + sHandLen * Math.sin(secAngle)));
+            }
+
+            double angle = Math.toRadians(((double) seconds / MAX_SECONDS * 360) - 90);
+            int knobX = (int) (centerX + radius * Math.cos(angle));
+            int knobY = (int) (centerY + radius * Math.sin(angle));
             g2.setColor(new Color(themeColor.getRed(), themeColor.getGreen(), themeColor.getBlue(), 80));
-            g2.fillOval(handX - 10, handY - 10, 20, 20); // Glow
+            g2.fillOval(knobX - 10, knobY - 10, 20, 20);
             g2.setColor(Color.WHITE);
-            g2.fillOval(handX - 6, handY - 6, 12, 12); // Solid Center
+            g2.fillOval(knobX - 6, knobY - 6, 12, 12);
 
-            // 4. CENTER CONCENTRIC TEXT AREA
             int innerR = 48;
             g2.setColor(new Color(30, 30, 30));
             g2.fillOval(centerX - innerR, centerY - innerR, innerR * 2, innerR * 2);
             g2.setColor(new Color(themeColor.getRed(), themeColor.getGreen(), themeColor.getBlue(), 120));
-            g2.setStroke(new BasicStroke(2f));
+            g2.setStroke(new BasicStroke(2.5f));
             g2.drawOval(centerX - innerR, centerY - innerR, innerR * 2, innerR * 2);
 
-            // 5. CENTERED TEXT
             g2.setFont(new Font("Segoe UI Black", Font.BOLD, 22));
             g2.setColor(Color.WHITE);
             String timeStr = (seconds < 60 && isRunning) ? seconds + "s" : (seconds / 60) + "m";
@@ -630,8 +550,138 @@ public class OfflineTutorApp extends JFrame {
         }
     }
 
+    private class TeacherQuizConfigDialog extends JDialog {
+        private JSpinner easySpin, medSpin, hardSpin;
+        private JTextField quizTitleField;
 
+        public TeacherQuizConfigDialog(Frame owner) {
+            super(owner, "Quiz Generator (Teacher Mode)", true);
+            setSize(450, 500);
+            setLocationRelativeTo(owner);
+            setResizable(false);
 
+            JPanel panel = new JPanel(new GridLayout(0, 1, 10, 15)) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    setBackground(isDarkMode() ? new Color(30, 30, 30) : new Color(245, 245, 250));
+                    super.paintComponent(g);
+                }
+            };
+            panel.setBorder(BorderFactory.createEmptyBorder(25, 30, 25, 30));
+
+            autoAddLabel(panel, "QUIZ TITLE");
+            quizTitleField = new JTextField("Weekly Assessment - " + selectedSubject) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    setBackground(isDarkMode() ? new Color(45, 45, 45) : Color.WHITE);
+                    setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                    setCaretColor(isDarkMode() ? Color.WHITE : Color.BLACK);
+                    super.paintComponent(g);
+                }
+            };
+            panel.add(quizTitleField);
+
+            autoAddLabel(panel, "NUMBER OF EASY QUESTIONS");
+            easySpin = new JSpinner(new SpinnerNumberModel(5, 0, 50, 1));
+            panel.add(easySpin);
+
+            autoAddLabel(panel, "NUMBER OF MEDIUM QUESTIONS");
+            medSpin = new JSpinner(new SpinnerNumberModel(5, 0, 50, 1));
+            panel.add(medSpin);
+
+            autoAddLabel(panel, "NUMBER OF HARD QUESTIONS");
+            hardSpin = new JSpinner(new SpinnerNumberModel(2, 0, 50, 1));
+            panel.add(hardSpin);
+
+            JButton btnGenerate = new JButton("SCAN & EXPORT PDF");
+            btnGenerate.setFont(new Font("Segoe UI", Font.BOLD, 14));
+            btnGenerate.setBackground(new Color(46, 204, 113));
+            btnGenerate.setForeground(Color.WHITE);
+            btnGenerate.addActionListener(e -> {
+                dispose();
+                startTeacherWorkflow(quizTitleField.getText(),
+                        (int)easySpin.getValue(), (int)medSpin.getValue(), (int)hardSpin.getValue());
+            });
+            panel.add(btnGenerate);
+            add(panel);
+        }
+
+        private void autoAddLabel(JPanel p, String txt) {
+            JLabel l = new JLabel(txt) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    setForeground(isDarkMode() ? Color.GRAY : Color.DARK_GRAY);
+                    super.paintComponent(g);
+                }
+            };
+            l.setFont(new Font("Segoe UI", Font.BOLD, 10));
+            p.add(l);
+        }
+    }
+
+    private class QuizConfigDialog extends JDialog {
+        private JRadioButton theoryOpt, numericalOpt, mixedOpt;
+        private JSpinner theorySpin, numericalSpin;
+        private boolean confirmed = false;
+
+        public QuizConfigDialog(Frame owner) {
+            super(owner, "Quiz Configuration", true);
+            setSize(400, 450);
+            setLocationRelativeTo(owner);
+            setLayout(new BorderLayout());
+
+            JPanel panel = new JPanel(new GridLayout(0, 1, 10, 10));
+            panel.setBorder(BorderFactory.createEmptyBorder(25, 30, 25, 30));
+
+            theoryOpt = new JRadioButton("Pure Theory");
+            numericalOpt = new JRadioButton("Pure Numerical");
+            mixedOpt = new JRadioButton("Mixed (Theory + Numerical)");
+
+            ButtonGroup group = new ButtonGroup();
+            group.add(theoryOpt); group.add(numericalOpt); group.add(mixedOpt);
+
+            theorySpin = new JSpinner(new SpinnerNumberModel(5, 1, 50, 1));
+            numericalSpin = new JSpinner(new SpinnerNumberModel(5, 1, 50, 1));
+
+            // Initial state: Disabled until a radio button is clicked
+            theorySpin.setEnabled(false);
+            numericalSpin.setEnabled(false);
+
+            // Selection Logic: Enable only relevant spinners
+            theoryOpt.addActionListener(e -> { theorySpin.setEnabled(true); numericalSpin.setEnabled(false); });
+            numericalOpt.addActionListener(e -> { theorySpin.setEnabled(false); numericalSpin.setEnabled(true); });
+            mixedOpt.addActionListener(e -> { theorySpin.setEnabled(true); numericalSpin.setEnabled(true); });
+
+            panel.add(new JLabel("Study Mode:"));
+            panel.add(theoryOpt);
+            panel.add(new JLabel("Theory Question Count:"));
+            panel.add(theorySpin);
+            panel.add(new JLabel("----------------------------"));
+            panel.add(numericalOpt);
+            panel.add(mixedOpt);
+            panel.add(new JLabel("Numerical Question Count:"));
+            panel.add(numericalSpin);
+
+            JButton btnStart = new JButton("CONFIRM SETTINGS");
+            btnStart.addActionListener(e -> {
+                if(!theoryOpt.isSelected() && !numericalOpt.isSelected() && !mixedOpt.isSelected()) {
+                    JOptionPane.showMessageDialog(this, "Please select a mode.");
+                    return;
+                }
+                confirmed = true;
+                dispose();
+            });
+
+            add(panel, BorderLayout.CENTER);
+            add(btnStart, BorderLayout.SOUTH);
+        }
+
+        public boolean isConfirmed() { return confirmed; }
+        public boolean isTheory() { return theoryOpt.isSelected() || mixedOpt.isSelected(); }
+        public boolean isNumerical() { return numericalOpt.isSelected() || mixedOpt.isSelected(); }
+        public int getTheoryCount() { return theoryOpt.isSelected() || mixedOpt.isSelected() ? (int)theorySpin.getValue() : 0; }
+        public int getNumericalCount() { return numericalOpt.isSelected() || mixedOpt.isSelected() ? (int)numericalSpin.getValue() : 0; }
+    }
 
     private class SplashScreen extends JDialog {
         public SplashScreen() {
@@ -640,8 +690,6 @@ public class OfflineTutorApp extends JFrame {
             setLocationRelativeTo(null);
 
             ImageIcon backgroundGif = new ImageIcon("background.gif");
-
-            // Use a LayeredPane so the Quit button can sit "on top" of everything easily
             JLayeredPane layeredPane = new JLayeredPane();
             layeredPane.setPreferredSize(new Dimension(800, 480));
 
@@ -649,38 +697,26 @@ public class OfflineTutorApp extends JFrame {
                 @Override
                 protected void paintComponent(Graphics g) {
                     super.paintComponent(g);
-                    if (backgroundGif != null) {
-                        g.drawImage(backgroundGif.getImage(), 0, 0, getWidth(), getHeight(), this);
-                    }
+                    if (backgroundGif != null) g.drawImage(backgroundGif.getImage(), 0, 0, getWidth(), getHeight(), this);
                 }
             };
             contentPane.setBounds(0, 0, 800, 480);
 
-            // --- QUIT BUTTON (Top Right) ---
-            JButton quitBtn = new JButton("<html><div style='text-shadow: 1px 1px 2px #000000;'>✕ Quit</div></html>");
+            JButton quitBtn = new JButton("<html><div style='text-shadow: 1px 1px 2px #000000;'> Quit X</div></html>");
             quitBtn.setFont(new Font("Segoe UI", Font.BOLD, 14));
             quitBtn.setForeground(Color.WHITE);
-            quitBtn.setContentAreaFilled(false); // Transparent background
+            quitBtn.setContentAreaFilled(false);
             quitBtn.setBorderPainted(false);
             quitBtn.setFocusPainted(false);
             quitBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-
-            // Position it in the top right corner
             quitBtn.setBounds(700, 10, 80, 30);
-
             quitBtn.addActionListener(e -> {
-                int confirm = JOptionPane.showConfirmDialog(this,
-                        "Are you sure you want to exit PaLO?", "Quit Application",
-                        JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE);
-                if (confirm == JOptionPane.YES_OPTION) {
-                    System.exit(0);
-                }
+                if (JOptionPane.showConfirmDialog(this, "Are you sure you want to exit PaLO?", "Quit Application", JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE) == JOptionPane.YES_OPTION) System.exit(0);
             });
 
             GridBagConstraints gbc = new GridBagConstraints();
             gbc.insets = new java.awt.Insets(40, 60, 40, 60);
 
-            // 1. PaLO Title
             JLabel titleLabel = new JLabel("<html><div style='text-shadow: 3px 3px 6px #000000;'>PaLO</div></html>");
             titleLabel.setFont(new Font("Serif", Font.PLAIN, 110));
             titleLabel.setForeground(Color.WHITE);
@@ -688,641 +724,31 @@ public class OfflineTutorApp extends JFrame {
             gbc.anchor = GridBagConstraints.NORTHWEST;
             contentPane.add(titleLabel, gbc);
 
-            // 2. Full Name
-            String fullNameHtml = "<html><div style='text-shadow: 2px 2px 4px #000000;'>" +
-                    "Progressive and<br>Audio assisted<br>Learning<br>Orchestrator</div></html>";
+            String fullNameHtml = "<html><div style='text-shadow: 2px 2px 4px #000000;'>" + "Progressive and<br>Audio assisted<br>Learning<br>Orchestrator</div></html>";
             JLabel fullNameLabel = new JLabel(fullNameHtml);
             fullNameLabel.setFont(new Font("Serif", Font.PLAIN, 28));
             fullNameLabel.setForeground(Color.WHITE);
-            gbc.gridx = 0; gbc.gridy = 1;
-            gbc.weightx = 1.0; gbc.weighty = 0.5;
+            gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 1.0; gbc.weighty = 0.5;
             gbc.anchor = GridBagConstraints.SOUTHWEST;
             contentPane.add(fullNameLabel, gbc);
 
-            // 3. Initializing Text
-            JLabel initLabel = new JLabel("<html><div style='text-shadow: 1px 1px 3px #000000;'>" +
-                    "Initializing Mathematical Engines...</div></html>");
+            JLabel initLabel = new JLabel("<html><div style='text-shadow: 1px 1px 3px #000000;'>" + "Initializing Orchestrators.....</div></html>");
             initLabel.setFont(new Font("Segoe UI", Font.ITALIC, 14));
             initLabel.setForeground(new Color(230, 230, 230));
-            gbc.gridx = 1; gbc.gridy = 1;
-            gbc.weightx = 0; gbc.weighty = 0.5;
+            gbc.gridx = 1; gbc.gridy = 1; gbc.weightx = 0; gbc.weighty = 0.5;
             gbc.anchor = GridBagConstraints.SOUTHEAST;
             contentPane.add(initLabel, gbc);
 
-            // Add components to LayeredPane
             layeredPane.add(contentPane, JLayeredPane.DEFAULT_LAYER);
             layeredPane.add(quitBtn, JLayeredPane.PALETTE_LAYER);
-
-
             add(layeredPane, BorderLayout.CENTER);
         }
     }
 
-    private JButton createQuitQuizButton() {
-        JButton btn = new JButton("END QUIZ") {
-            @Override
-            protected void paintComponent(Graphics g) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
-                // Red themed glow for the termination button
-                g2.setColor(getModel().isRollover() ? new Color(255, 45, 85) : new Color(255, 45, 85, 60));
-                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 12, 12);
-                super.paintComponent(g);
-                g2.dispose();
-            }
-        };
-
-        btn.setFont(new Font("Segoe UI Black", Font.BOLD, 14));
-        btn.setForeground(Color.WHITE);
-        btn.setContentAreaFilled(false);
-        btn.setBorderPainted(false);
-        btn.setFocusPainted(false);
-        btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-
-        btn.addActionListener(e -> {
-            // 1. TERMINATE QUIZ LOGIC
-            if (quizTimer != null) quizTimer.stop();
-            stopZenMusic();
-            saveProgress(); // Save results to the history file
-
-            // 2. CLEAR DATA POOLS (Memory Termination)
-            // This ensures the next "Offline Study" starts with a fresh scan
-            easyQuestions.clear();
-            hardQuestions.clear();
-            expertQuestions.clear();
-            sessionLog.clear();
-            questionCounter = 0;
-            currentQuestion = null;
-
-            // 3. TERMINATE INTERFACE WINDOW
-            // We set the main window to invisible and switch to a blank state
-            this.setVisible(false);
-            if (cardLayout != null) {
-                cardLayout.show(mainCardPanel, "BLANK");
-            }
-
-            // 4. RELAUNCH DASHBOARD
-            // This brings the user back to the main trend analysis/mode selection
-            SwingUtilities.invokeLater(() -> {
-                PaLOHomePage home = new PaLOHomePage(this);
-                home.setVisible(true);
-            });
-        });
-        return btn;
-    }
-
-    /**
-     * Show homepage within the integrated interface
-     */
-    private void showHomepageInIntegratedMode() {
-        // Create and show homepage dialog as before
-        PaLOHomePage home = new PaLOHomePage(this);
-        home.setVisible(true);
-    }
-
-    /**
-     * Setup the main quiz UI (separate window approach)
-     */
-    private void setupUI() {
-        JPanel mainPanel = createQuizPanel();
-        add(mainPanel, BorderLayout.CENTER);
-    }
-
-    /**
-     * Setup the chat UI (separate window approach)
-     */
-    private void setupChatUI() {
-        JPanel mainPanel = createChatPanel();
-        add(mainPanel, BorderLayout.CENTER);
-        
-        // Center the window
-        setLocationRelativeTo(null);
-    }
-
-    private class ChatBubble extends JPanel {
-        public ChatBubble(String text, boolean isUser) {
-            setLayout(new BorderLayout());
-            setOpaque(false);
-            setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-
-            JTextArea area = new JTextArea(text);
-            area.setLineWrap(true);
-            area.setWrapStyleWord(true);
-            area.setEditable(false);
-            area.setFont(new Font("Segoe UI", Font.PLAIN, 15));
-            area.setForeground(Color.WHITE);
-            area.setOpaque(false);
-            area.setBorder(BorderFactory.createEmptyBorder(12, 16, 12, 16));
-
-            // Styling based on who is speaking
-            Color bubbleColor = isUser ? new Color(52, 152, 219) : new Color(45, 45, 45);
-
-            JPanel bubble = new JPanel(new BorderLayout()) {
-                @Override
-                protected void paintComponent(Graphics g) {
-                    Graphics2D g2 = (Graphics2D) g.create();
-                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                    g2.setColor(bubbleColor);
-                    g2.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
-                    g2.dispose();
-                }
-            };
-            bubble.setOpaque(false);
-            bubble.add(area);
-
-            // Align User to Right, AI to Left
-            if (isUser) {
-                add(Box.createHorizontalGlue(), BorderLayout.WEST);
-                add(bubble, BorderLayout.CENTER);
-            } else {
-                add(bubble, BorderLayout.CENTER);
-                add(Box.createHorizontalGlue(), BorderLayout.EAST);
-            }
-        }
-    }
-
-    // Add this field at the top of your class
-    private boolean isAudioMode = false;
-    private boolean isChatMode = false;
-    private LlamaConnection llamaConnection;
-
-    public OfflineTutorApp() {
-        SplashScreen splash = new SplashScreen();
-        splash.setVisible(true);
-
-        new Thread(() -> {
-            try {
-                initAI();
-                loadProgress();
-                llamaConnection = new LlamaConnection();
-
-                Thread.sleep(2500);
-
-                SwingUtilities.invokeLater(() -> {
-                    splash.dispose();
-
-                    initializeIntegratedUI();
-
-                    // --- APPLY CUSTOM LOGO ---
-                    setAppIcon();
-
-                    setSize(1400, 850);
-
-                    // --- STABLE TASKBAR FIX ---
-                    // Parked off-screen so the new P-Logo stays in the taskbar
-                    this.setLocation(-4000, -4000);
-                    this.setVisible(true);
-
-                    // 4. Launch Dashboard
-                    PaLOHomePage home = new PaLOHomePage(this);
-                    home.setVisible(true);
-                });
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }).start();
-    }
-
-    private CircleMasteryPanel circleMastery;
-
-    private CircularTimer clockTimer; // Add this as a field at the top of your class
-
-    private JSpinner questionCountSpinner;
-
-    /**
-     * Initialize the integrated UI with CardLayout for seamless mode switching
-     */
-    private void initializeIntegratedUI() {
-        // 1. Core logic and component initialization
-        initializeComponents();
-
-        setTitle("PaLO - Adaptive Learning Orchestrator");
-        setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
-
-        addWindowListener(new WindowAdapter() {
-            @Override
-            public void windowClosing(WindowEvent e) {
-                int response = JOptionPane.showConfirmDialog(
-                        null, "Exit PaLO entirely?", "Confirm Exit",
-                        JOptionPane.YES_NO_OPTION);
-                if (response == JOptionPane.YES_OPTION) {
-                    saveProgress();
-                    System.exit(0);
-                }
-            }
-        });
-
-        // 2. Initialize CardLayout for seamless mode switching
-        cardLayout = new CardLayout();
-        mainCardPanel = new JPanel(cardLayout);
-        mainCardPanel.setBackground(new Color(28, 28, 28));
-
-        // 3. Create a Blank Starter Card (The "Hidden" State)
-        // This ensures the window looks like an empty dark container before a mode is chosen
-        JPanel blankPlaceholder = new JPanel();
-        blankPlaceholder.setBackground(new Color(28, 28, 28));
-        mainCardPanel.add(blankPlaceholder, "BLANK");
-
-        // 4. Build individual mode panels in the background
-        quizPanel = createQuizPanel();
-        chatPanel = createChatPanel();
-        audioPanel = createAudioPanel();
-
-        // 5. Add functional panels to the stack
-        mainCardPanel.add(quizPanel, "QUIZ");
-        mainCardPanel.add(chatPanel, "CHAT");
-        mainCardPanel.add(audioPanel, "AUDIO");
-
-        setLayout(new BorderLayout());
-        add(mainCardPanel, BorderLayout.CENTER);
-
-        // 6. CRITICAL: Default to the BLANK card
-        // The main window will remain on this "Empty" card until
-        // animateAndTransition() calls switchToQuizMode() or switchToChatMode()
-        cardLayout.show(mainCardPanel, "BLANK");
-
-        // Ensure the main window starts invisible
-        this.setVisible(false);
-    }
-
-    /**
-     * Initialize all UI components that are referenced in panels
-     */
-    private void initializeComponents() {
-        // Initialize quiz components
-        circleMastery = new CircleMasteryPanel();
-        clockTimer = new CircularTimer();
-        
-        // Initialize quiz option buttons with theme colors
-        btnA = createOptionButton("-", new Color(52, 152, 219));  // Blue
-        btnB = createOptionButton("-", new Color(155, 89, 182));  // Purple  
-        btnC = createOptionButton("-", new Color(46, 204, 113));  // Green
-        btnD = createOptionButton("-", new Color(241, 196, 15));  // Yellow
-        
-        // Initialize other components
-        aiStatusLabel = new JLabel("AI Status: Ready", SwingConstants.CENTER);
-        aiStatusLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        aiStatusLabel.setForeground(Color.LIGHT_GRAY);
-    }
-
-    /**
-     * Switch to Quiz mode with slide animation
-     */
-    public void switchToQuizMode() {
-        isChatMode = false;
-        isAudioMode = false;
-        animatePanelTransition("QUIZ");
-    }
-
-    /**
-     * Switch to Chat mode with slide animation
-     */
-    public void switchToChatMode() {
-        isChatMode = true;
-        isAudioMode = false;
-        animatePanelTransition("CHAT");
-    }
-
-    /**
-     * Switch to Audio mode with slide animation
-     */
-    public void switchToAudioMode() {
-        isChatMode = false;
-        isAudioMode = true;
-        animatePanelTransition("AUDIO");
-    }
-
-    /**
-     * Animate panel transition with slide effect
-     */
-    private void animatePanelTransition(String targetPanel) {
-        // Immediately switch to the target panel for better UX
-        cardLayout.show(mainCardPanel, targetPanel);
-        revalidate();
-        repaint();
-        
-        // Optional: Add a simple fade-in effect if needed in the future
-        // For now, immediate switching provides better responsiveness
-    }
-
-    /**
-     * Create the Quiz mode panel
-     */
-    private JPanel createQuizPanel() {
-        JPanel mainPanel = new JPanel(new BorderLayout(20, 0));
-        mainPanel.setBackground(new Color(28, 28, 28));
-
-        // --- SIDEBAR (LEFT) ---
-        JPanel sidebar = new JPanel();
-        sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
-        sidebar.setPreferredSize(new Dimension(300, 800));
-        sidebar.setBackground(new Color(35, 35, 35));
-        sidebar.setBorder(BorderFactory.createEmptyBorder(25, 15, 25, 15));
-
-        // 1. Mastery Circle
-        addSidebarSection(sidebar, "OVERALL MASTERY", circleMastery);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 30)));
-
-        // 2. Timer Section
-        addSidebarSection(sidebar, "QUIZ DURATION", clockTimer);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 5)));
-        timerLabel = new JLabel("Timer: Off", SwingConstants.CENTER);
-        timerLabel.setForeground(Color.LIGHT_GRAY);
-        timerLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        sidebar.add(timerLabel);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 25)));
-
-        // 3. Question Count Spinner - Always enabled
-        JLabel countLabel = new JLabel("QUESTIONS TO GENERATE");
-        countLabel.setFont(new Font("Segoe UI", Font.BOLD, 11));
-        countLabel.setForeground(Color.GRAY);
-        countLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        sidebar.add(countLabel);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 8)));
-
-        questionCountSpinner = new JSpinner(new SpinnerNumberModel(10, 5, 30, 1));
-        questionCountSpinner.setMaximumSize(new Dimension(240, 45));
-        questionCountSpinner.setAlignmentX(Component.CENTER_ALIGNMENT);
-        questionCountSpinner.setEnabled(true); // Always enabled
-        JComponent editor = questionCountSpinner.getEditor();
-        JFormattedTextField textField = ((JSpinner.DefaultEditor) editor).getTextField();
-        textField.setBackground(new Color(50, 50, 50));
-        textField.setForeground(Color.WHITE);
-        textField.setCaretColor(Color.WHITE);
-        textField.setEditable(true); // Always editable
-        sidebar.add(questionCountSpinner);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 30)));
-
-        // 4. Status & Scan
-        sidebar.add(aiStatusLabel);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 15)));
-
-        JButton btnScan = new JButton("SCAN TEXTBOOK");
-        btnScan.setAlignmentX(Component.CENTER_ALIGNMENT);
-        btnScan.setPreferredSize(new Dimension(240, 70));
-        btnScan.setMaximumSize(new Dimension(240, 70));
-        btnScan.setFont(new Font("Segoe UI Black", Font.BOLD, 16));
-        btnScan.setBackground(new Color(52, 152, 219));
-        btnScan.setForeground(Color.WHITE);
-        btnScan.setBorder(BorderFactory.createLineBorder(Color.WHITE, 2));
-        btnScan.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        btnScan.addActionListener(e -> performScan());
-        sidebar.add(btnScan);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 20)));
-
-        // 5. END QUIZ Button - Bigger and under SCAN
-        JButton btnEndQuiz = createQuitQuizButton();
-        btnEndQuiz.setPreferredSize(new Dimension(240, 70)); // Same size as SCAN button
-        btnEndQuiz.setMaximumSize(new Dimension(240, 70));
-        sidebar.add(btnEndQuiz);
-        sidebar.add(Box.createVerticalGlue());
-
-        // --- QUIZ CONTENT (CENTER) ---
-        JPanel quizContent = new JPanel(new BorderLayout(20, 20));
-        quizContent.setOpaque(false);
-        quizContent.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 30));
-
-        difficultyLabel = new JLabel("Question #1 | Current Level: EASY", SwingConstants.CENTER);
-        difficultyLabel.setFont(new Font("Segoe UI", Font.BOLD, 18));
-        difficultyLabel.setForeground(new Color(230, 126, 34));
-
-        questionArea = new JTextArea();
-        questionArea.setFont(new Font("Segoe UI", Font.PLAIN, 26));
-        questionArea.setLineWrap(true);
-        questionArea.setWrapStyleWord(true);
-        questionArea.setBackground(new Color(40, 40, 40));
-        questionArea.setForeground(Color.WHITE);
-        questionArea.setEditable(false);
-        questionArea.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
-
-        JScrollPane qScroll = new JScrollPane(questionArea);
-        qScroll.getViewport().setOpaque(false);
-        qScroll.setOpaque(false);
-        qScroll.setBorder(BorderFactory.createLineBorder(new Color(60, 60, 60), 2));
-
-        JPanel btnGrid = new JPanel(new GridLayout(2, 2, 25, 25));
-        btnGrid.setOpaque(false);
-        btnGrid.add(btnA); btnGrid.add(btnB);
-        btnGrid.add(btnC); btnGrid.add(btnD);
-
-        quizContent.add(difficultyLabel, BorderLayout.NORTH);
-        quizContent.add(qScroll, BorderLayout.CENTER);
-        quizContent.add(btnGrid, BorderLayout.SOUTH);
-
-        mainPanel.add(sidebar, BorderLayout.WEST);
-        mainPanel.add(quizContent, BorderLayout.CENTER);
-
-        return mainPanel;
-    }
-
-    // Helper to create the mode-switching buttons in sidebar
-    private JButton createSidebarModeButton(String text, Color accent) {
-        JButton b = new JButton(text);
-        b.setAlignmentX(Component.CENTER_ALIGNMENT);
-        b.setMaximumSize(new Dimension(240, 40));
-        b.setFont(new Font("Segoe UI", Font.BOLD, 12));
-        b.setForeground(Color.WHITE);
-        b.setBackground(new Color(accent.getRed(), accent.getGreen(), accent.getBlue(), 50));
-        b.setBorder(BorderFactory.createLineBorder(accent, 1));
-        b.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        b.setFocusPainted(false);
-        return b;
-    }
-
-    /**
-     * Create the Chat mode panel
-     */
-    private JPanel createChatPanel() {
-        JPanel mainPanel = new JPanel(new BorderLayout(20, 0));
-        mainPanel.setBackground(new Color(28, 28, 28));
-
-        // --- SIDEBAR (LEFT) ---
-        JPanel sidebar = new JPanel();
-        sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
-        sidebar.setPreferredSize(new Dimension(280, 800));
-        sidebar.setBackground(new Color(35, 35, 35));
-        sidebar.setBorder(BorderFactory.createEmptyBorder(30, 15, 30, 15));
-
-        JLabel titleLabel = new JLabel("Talk to AI");
-        titleLabel.setFont(new Font("Segoe UI", Font.BOLD, 24));
-        titleLabel.setForeground(new Color(155, 89, 182));
-        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        sidebar.add(titleLabel);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 20)));
-
-        JLabel infoLabel = new JLabel("<html><center>Chat with Llama about your subjects. All from inside PaLO—no browser or terminal.</center></html>");
-        infoLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        infoLabel.setForeground(Color.LIGHT_GRAY);
-        infoLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        sidebar.add(infoLabel);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 25)));
-
-        // --- Ollama Panel (Existing logic) ---
-        JLabel ollamaStatusLabel = new JLabel("Checking...");
-        ollamaStatusLabel.setFont(new Font("Segoe UI", Font.BOLD, 12));
-        ollamaStatusLabel.setForeground(Color.LIGHT_GRAY);
-        ollamaStatusLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        sidebar.add(ollamaStatusLabel);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 8)));
-
-        JButton btnStartOllama = new JButton("Start Ollama");
-        btnStartOllama.setAlignmentX(Component.CENTER_ALIGNMENT);
-        btnStartOllama.setMaximumSize(new Dimension(240, 36));
-        btnStartOllama.setFont(new Font("Segoe UI", Font.BOLD, 12));
-        btnStartOllama.setBackground(new Color(46, 204, 113));
-        btnStartOllama.setForeground(Color.WHITE);
-        btnStartOllama.setFocusPainted(false);
-        btnStartOllama.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        btnStartOllama.addActionListener(e -> {
-            btnStartOllama.setEnabled(false);
-            ollamaStatusLabel.setText("Starting Ollama...");
-            new Thread(() -> {
-                boolean ok = llamaConnection.startOllamaFromApp();
-                SwingUtilities.invokeLater(() -> {
-                    btnStartOllama.setEnabled(true);
-                    updateOllamaStatusLabel(ollamaStatusLabel);
-                });
-            }).start();
-        });
-
-        JButton btnDownloadModel = new JButton("Download model (" + LlamaConnection.getDefaultPullModelName() + ")");
-        btnDownloadModel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        btnDownloadModel.setMaximumSize(new Dimension(240, 36));
-        btnDownloadModel.setFont(new Font("Segoe UI", Font.BOLD, 11));
-        btnDownloadModel.setBackground(new Color(52, 152, 219));
-        btnDownloadModel.setForeground(Color.WHITE);
-        btnDownloadModel.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        btnDownloadModel.addActionListener(e -> {
-            btnDownloadModel.setEnabled(false);
-            ollamaStatusLabel.setText("Downloading...");
-            new Thread(() -> {
-                try {
-                    llamaConnection.pullDefaultModel(() -> { });
-                    SwingUtilities.invokeLater(() -> {
-                        updateOllamaStatusLabel(ollamaStatusLabel);
-                        btnDownloadModel.setEnabled(true);
-                    });
-                } catch (Exception ex) {
-                    SwingUtilities.invokeLater(() -> {
-                        ollamaStatusLabel.setText("Download failed.");
-                        btnDownloadModel.setEnabled(true);
-                    });
-                }
-            }).start();
-        });
-
-        JButton btnCheckOllama = new JButton("Check again");
-        btnCheckOllama.setAlignmentX(Component.CENTER_ALIGNMENT);
-        btnCheckOllama.setMaximumSize(new Dimension(240, 32));
-        btnCheckOllama.setFont(new Font("Segoe UI", Font.PLAIN, 11));
-        btnCheckOllama.setForeground(Color.LIGHT_GRAY);
-        btnCheckOllama.setContentAreaFilled(false);
-        btnCheckOllama.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        btnCheckOllama.addActionListener(e -> {
-            llamaConnection.refreshModel();
-            updateOllamaStatusLabel(ollamaStatusLabel);
-        });
-
-        sidebar.add(btnStartOllama);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 6)));
-        sidebar.add(btnDownloadModel);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 4)));
-        sidebar.add(btnCheckOllama);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 25)));
-
-        subjectDropdown = new JComboBox<>(new String[]{"Physics", "Computer Science", "Biology", "General"});
-        subjectDropdown.setMaximumSize(new Dimension(240, 35));
-        addSidebarSection(sidebar, "SUBJECT", subjectDropdown);
-
-        sidebar.add(Box.createVerticalGlue());
-
-        // --- NEW GO BACK BUTTON ---
-        JButton btnBack = new JButton("BACK TO DASHBOARD");
-        btnBack.setAlignmentX(Component.CENTER_ALIGNMENT);
-        btnBack.setPreferredSize(new Dimension(240, 50));
-        btnBack.setMaximumSize(new Dimension(240, 50));
-        btnBack.setFont(new Font("Segoe UI Black", Font.BOLD, 12));
-        btnBack.setBackground(new Color(45, 45, 45));
-        btnBack.setForeground(Color.WHITE);
-        btnBack.setBorder(BorderFactory.createLineBorder(Color.WHITE, 1));
-        btnBack.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        btnBack.addActionListener(e -> {
-            // Switch main window to blank and hide it
-            cardLayout.show(mainCardPanel, "BLANK");
-            this.setVisible(false);
-            // Re-open Dashboard
-            PaLOHomePage home = new PaLOHomePage(this);
-            home.setVisible(true);
-        });
-        sidebar.add(btnBack);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 20)));
-
-        updateOllamaStatusLabel(ollamaStatusLabel);
-
-        // --- CHAT CONTENT (CENTER) ---
-        JPanel chatContent = new JPanel(new BorderLayout(20, 20));
-        chatContent.setOpaque(false);
-        chatContent.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 30));
-
-        chatArea = new JTextArea();
-        chatArea.setFont(new Font("Segoe UI", Font.PLAIN, 16));
-        chatArea.setLineWrap(true);
-        chatArea.setWrapStyleWord(true);
-        chatArea.setBackground(new Color(40, 40, 40));
-        chatArea.setForeground(Color.WHITE);
-        chatArea.setEditable(false);
-        chatArea.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
-        chatArea.setText("Welcome to PaLO Chat! Ask me anything.\n\n");
-
-        JScrollPane chatScroll = new JScrollPane(chatArea);
-        chatScroll.getViewport().setOpaque(false);
-        chatScroll.setOpaque(false);
-        chatScroll.setBorder(BorderFactory.createLineBorder(new Color(60, 60, 60), 2));
-
-        JPanel inputPanel = new JPanel(new BorderLayout(10, 10));
-        inputPanel.setOpaque(false);
-        inputPanel.setBorder(BorderFactory.createEmptyBorder(10, 0, 0, 0));
-
-        chatInput = new JTextField();
-        chatInput.setFont(new Font("Segoe UI", Font.PLAIN, 16));
-        chatInput.setBackground(new Color(50, 50, 50));
-        chatInput.setForeground(Color.WHITE);
-        chatInput.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(100, 100, 100), 2),
-                BorderFactory.createEmptyBorder(10, 15, 10, 15)
-        ));
-        chatInput.addActionListener(e -> sendChatMessage());
-
-        sendButton = new JButton("Send");
-        sendButton.setFont(new Font("Segoe UI", Font.BOLD, 16));
-        sendButton.setBackground(new Color(155, 89, 182));
-        sendButton.setForeground(Color.WHITE);
-        sendButton.setPreferredSize(new Dimension(100, 50));
-        sendButton.setBorder(BorderFactory.createLineBorder(new Color(155, 89, 182), 2));
-        sendButton.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        sendButton.addActionListener(e -> sendChatMessage());
-
-        inputPanel.add(chatInput, BorderLayout.CENTER);
-        inputPanel.add(sendButton, BorderLayout.EAST);
-
-        chatContent.add(chatScroll, BorderLayout.CENTER);
-        chatContent.add(inputPanel, BorderLayout.SOUTH);
-
-        mainPanel.add(sidebar, BorderLayout.WEST);
-        mainPanel.add(chatContent, BorderLayout.CENTER);
-
-        return mainPanel;
-    }
-
-    /**
-     * Create the Audio Assisted mode panel
-     */
     private JPanel createAudioPanel() {
         JPanel mainPanel = new JPanel(new BorderLayout(20, 0));
         mainPanel.setBackground(new Color(28, 28, 28));
 
-        // --- SIDEBAR (LEFT) ---
         JPanel sidebar = new JPanel();
         sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
         sidebar.setPreferredSize(new Dimension(300, 800));
@@ -1334,65 +760,24 @@ public class OfflineTutorApp extends JFrame {
         titleLabel.setForeground(new Color(52, 152, 219));
         titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
         sidebar.add(titleLabel);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 20)));
-
-        JLabel infoLabel = new JLabel("<html><center>Interactive voice mode for the differently abled. Use voice commands and audio feedback.</center></html>");
-        infoLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        infoLabel.setForeground(Color.LIGHT_GRAY);
-        infoLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-        sidebar.add(infoLabel);
         sidebar.add(Box.createRigidArea(new Dimension(0, 30)));
 
-        // Audio controls
         JButton btnStartVoice = new JButton("Start Voice Recognition");
         btnStartVoice.setAlignmentX(Component.CENTER_ALIGNMENT);
         btnStartVoice.setMaximumSize(new Dimension(240, 50));
         btnStartVoice.setFont(new Font("Segoe UI Black", Font.BOLD, 14));
         btnStartVoice.setBackground(new Color(52, 152, 219));
         btnStartVoice.setForeground(Color.WHITE);
-        btnStartVoice.setBorder(BorderFactory.createLineBorder(Color.WHITE, 2));
         btnStartVoice.setCursor(new Cursor(Cursor.HAND_CURSOR));
         btnStartVoice.addActionListener(e -> startVoiceRecognition());
         sidebar.add(btnStartVoice);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 15)));
 
-        JButton btnPlayAudio = new JButton("Play Question Audio");
-        btnPlayAudio.setAlignmentX(Component.CENTER_ALIGNMENT);
-        btnPlayAudio.setMaximumSize(new Dimension(240, 40));
-        btnPlayAudio.setFont(new Font("Segoe UI", Font.BOLD, 12));
-        btnPlayAudio.setBackground(new Color(46, 204, 113));
-        btnPlayAudio.setForeground(Color.WHITE);
-        btnPlayAudio.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        btnPlayAudio.addActionListener(e -> playQuestionAudio());
-        sidebar.add(btnPlayAudio);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 30)));
-
-        // Mode switcher buttons
-        JButton btnQuiz = createSidebarModeButton("QUIZ MODE", new Color(46, 204, 113));
-        btnQuiz.addActionListener(e -> switchToQuizMode());
-        sidebar.add(btnQuiz);
-        sidebar.add(Box.createRigidArea(new Dimension(0, 10)));
-
-        JButton btnChat = createSidebarModeButton("TALK TO AI", new Color(155, 89, 182));
-        btnChat.addActionListener(e -> switchToChatMode());
-        sidebar.add(btnChat);
-        sidebar.add(Box.createVerticalGlue());
-
-        // --- AUDIO CONTENT (CENTER) ---
-        JPanel audioContent = new JPanel(new BorderLayout(20, 20));
+        JPanel audioContent = new JPanel(new BorderLayout());
         audioContent.setOpaque(false);
-        audioContent.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 30));
-
-        // Audio status display
-        JLabel audioStatusLabel = new JLabel("<html><center><font size='6'>🎤</font><br><br>Audio Mode Ready<br><font color='#888888'>Click 'Start Voice Recognition' to begin</font></center></html>", SwingConstants.CENTER);
-        audioStatusLabel.setFont(new Font("Segoe UI", Font.PLAIN, 18));
-        audioStatusLabel.setForeground(Color.WHITE);
-        audioStatusLabel.setBackground(new Color(40, 40, 40));
-        audioStatusLabel.setOpaque(true);
-        audioStatusLabel.setBorder(BorderFactory.createLineBorder(new Color(60, 60, 60), 2));
-        audioStatusLabel.setBorder(BorderFactory.createEmptyBorder(40, 20, 40, 20));
-
-        audioContent.add(audioStatusLabel, BorderLayout.CENTER);
+        JLabel status = new JLabel("<html><center>🎙<br>Audio Mode Ready</center></html>", SwingConstants.CENTER);
+        status.setFont(new Font("Segoe UI", Font.PLAIN, 18));
+        status.setForeground(Color.WHITE);
+        audioContent.add(status, BorderLayout.CENTER);
 
         mainPanel.add(sidebar, BorderLayout.WEST);
         mainPanel.add(audioContent, BorderLayout.CENTER);
@@ -1400,144 +785,1061 @@ public class OfflineTutorApp extends JFrame {
         return mainPanel;
     }
 
-    // Placeholder methods for audio functionality
+    public void switchToFocusMode() {
+        isChatMode = false;
+        isAudioMode = false;
+        focusPanel.removeAll();
+        focusPanel.add(createFocusPanel(), BorderLayout.CENTER);
+        cardLayout.show(mainCardPanel, "FOCUS");
+        this.dispose();
+        this.setUndecorated(true);
+        this.setExtendedState(JFrame.MAXIMIZED_BOTH);
+        this.setVisible(true);
+        focusPanel.revalidate();
+        focusPanel.repaint();
+    }
+
+    private void initializeIntegratedUI() {
+        initializeComponents();
+        cardLayout = new CardLayout();
+        mainCardPanel = new JPanel(cardLayout);
+        mainCardPanel.setBackground(new Color(28, 28, 28));
+        focusPanel = new JPanel(new BorderLayout());
+        focusPanel.setBackground(new Color(18, 18, 18));
+        mainCardPanel.add(focusPanel, "FOCUS");
+        setTitle("PaLO - Adaptive Learning Orchestrator");
+        setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
+
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                int response = JOptionPane.showConfirmDialog(null, "Exit PaLO entirely?", "Confirm Exit", JOptionPane.YES_NO_OPTION);
+                if (response == JOptionPane.YES_OPTION) {
+                    saveChatHistory();
+                    saveProgress();
+                    System.exit(0);
+                }
+            }
+        });
+
+        JPanel blankPlaceholder = new JPanel();
+        blankPlaceholder.setBackground(new Color(28, 28, 28));
+        mainCardPanel.add(blankPlaceholder, "BLANK");
+
+        quizPanel = createQuizPanel();
+        mainCardPanel.add(quizPanel, "QUIZ");
+        chatPanel = createChatPanel();
+        mainCardPanel.add(chatPanel, "CHAT");
+        audioPanel = createAudioPanel();
+        mainCardPanel.add(audioPanel, "AUDIO");
+        setLayout(new BorderLayout());
+        add(mainCardPanel, BorderLayout.CENTER);
+        cardLayout.show(mainCardPanel, "BLANK");
+        this.setVisible(false);
+    }
+
+    public void syncThemeBackgrounds() {
+        boolean isDark = UIManager.getLookAndFeel().getClass().getName().contains("Dark");
+        Color bg = isDark ? new Color(28, 28, 28) : new Color(245, 245, 250);
+
+        if (mainCardPanel != null) mainCardPanel.setBackground(bg);
+        if (quizPanel != null) quizPanel.setBackground(bg);
+        if (chatPanel != null) chatPanel.setBackground(bg);
+        if (focusPanel != null) focusPanel.setBackground(bg);
+
+        SwingUtilities.updateComponentTreeUI(this);
+    }
+
+    private JPanel createFocusPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        boolean isDark = isDarkMode();
+        panel.setBackground(isDark ? new Color(18, 18, 18) : new Color(245, 245, 250));
+
+        JLabel title = new JLabel("SELECT OPTIONS", SwingConstants.CENTER);
+        title.setFont(new Font("Segoe UI", Font.BOLD, 32));
+        title.setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+        title.setBorder(BorderFactory.createEmptyBorder(100, 0, 40, 0));
+        panel.add(title, BorderLayout.NORTH);
+
+        JPanel centerWrapper = new JPanel(new GridBagLayout());
+        centerWrapper.setOpaque(false);
+
+        JPanel grid = new JPanel(new GridLayout(2, 2, 25, 25));
+        grid.setOpaque(false);
+        grid.setPreferredSize(new Dimension(800, 350));
+
+        JButton pomodoro = createTechniqueButton("POMODORO", "25m Work | 5m Rest", new Color(231, 76, 60));
+        JButton flowState = createTechniqueButton("FLOW STATE", "90m Deep Work | 15m Rest", new Color(52, 152, 219));
+        JButton rule5217 = createTechniqueButton("52 / 17 RULE", "Science-backed Productivity", new Color(46, 204, 113));
+        JButton customZen = createTechniqueButton("CUSTOM ZEN", "Set your own intervals", new Color(155, 89, 182));
+
+        pomodoro.addActionListener(e -> startFocusTimerInternal(25, 5));
+        flowState.addActionListener(e -> startFocusTimerInternal(90, 15));
+        rule5217.addActionListener(e -> startFocusTimerInternal(52, 17));
+        customZen.addActionListener(e -> launchCustomFocus());
+
+        grid.add(pomodoro); grid.add(flowState);
+        grid.add(rule5217); grid.add(customZen);
+
+        centerWrapper.add(grid);
+        panel.add(centerWrapper, BorderLayout.CENTER);
+
+        JButton backBtn = new JButton("BACK TO MENU");
+        backBtn.setForeground(isDarkMode() ? Color.LIGHT_GRAY : new Color(80, 80, 80));
+        backBtn.setContentAreaFilled(false);
+        backBtn.setBorderPainted(false);
+        backBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        backBtn.addActionListener(e -> {
+            this.dispose();
+            this.setUndecorated(false);
+            this.setExtendedState(JFrame.NORMAL);
+            this.setSize(1400, 850);
+            this.setLocationRelativeTo(null);
+            SwingUtilities.updateComponentTreeUI(this);
+            this.setVisible(true);
+            new PaLOHomePage(this).setVisible(true);
+        });
+
+        JPanel bottomPanel = new JPanel();
+        bottomPanel.setOpaque(false);
+        bottomPanel.setBorder(BorderFactory.createEmptyBorder(0, 0, 80, 0));
+        bottomPanel.add(backBtn);
+        panel.add(bottomPanel, BorderLayout.SOUTH);
+
+        return panel;
+    }
+
+    private void launchCustomFocus() {
+        String w = JOptionPane.showInputDialog(this, "Work minutes:", "Custom Zen", JOptionPane.PLAIN_MESSAGE);
+        String r = JOptionPane.showInputDialog(this, "Rest minutes:", "Custom Zen", JOptionPane.PLAIN_MESSAGE);
+        try {
+            int wm = Integer.parseInt(w);
+            int rm = Integer.parseInt(r);
+            startFocusTimerInternal(wm, rm);
+        } catch (Exception ex) { }
+    }
+
+    private void startFocusTimerInternal(int workMins, int restMins) {
+        if (focusPanel == null) return;
+        focusPanel.removeAll();
+
+        BackgroundPanel sessionBG = new BackgroundPanel("assets/focus_bg.jpg");
+        sessionBG.setLayout(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+
+        JLabel statusLabel = new JLabel("DEEP FOCUS ACTIVE");
+        statusLabel.setFont(new Font("Segoe UI Black", Font.BOLD, 32));
+        statusLabel.setForeground(currentAccentColor);
+
+        CircularTimer timer = new CircularTimer();
+        timer.setSeconds(workMins * 60);
+        timer.setRunning(true);
+
+        JButton btnAbort = new JButton("ABORT SESSION");
+        btnAbort.setForeground(isDarkMode() ? Color.GRAY : Color.DARK_GRAY);
+        btnAbort.setContentAreaFilled(false);
+        btnAbort.addActionListener(e -> switchToFocusMode());
+
+        javax.swing.Timer countdown = new javax.swing.Timer(1000, e -> {
+            if (timer.getSeconds() > 0) {
+                timer.setSeconds(timer.getSeconds() - 1);
+            } else {
+                ((javax.swing.Timer)e.getSource()).stop();
+                playNotificationBell();
+                triggerRestModeInternal(restMins);
+            }
+        });
+
+        gbc.gridy = 0; gbc.insets = new Insets(0, 0, 20, 0);
+        sessionBG.add(statusLabel, gbc);
+        gbc.gridy = 1;
+        sessionBG.add(timer, gbc);
+        gbc.gridy = 2;
+        sessionBG.add(btnAbort, gbc);
+
+        focusPanel.add(sessionBG, BorderLayout.CENTER);
+        focusPanel.revalidate();
+        focusPanel.repaint();
+        countdown.start();
+    }
+
+    private void initializeComponents() {
+        homeCircleMastery = new CircleMasteryPanel();
+        quizMasteryRing = new QuizMasteryRing();
+        clockTimer = new CircularTimer();
+        String[] subjects = {"Computer Science", "Mathematics", "AI Concepts", "Data Science"};
+        subjectDropdown = new JComboBox<>(subjects);
+        subjectDropdown.setBackground(new Color(50, 50, 50));
+        subjectDropdown.setForeground(Color.WHITE);
+        loadingOverlay = new JPanel(new GridBagLayout());
+        loadingOverlay.setBackground(new Color(0, 0, 0, 150)); // Semi-transparent black
+        JLabel loadingText = new JLabel("PaLO is Orchestrating Numericals...");
+        loadingText.setForeground(Color.WHITE);
+        loadingText.setFont(new Font("Segoe UI", Font.BOLD, 20));
+        loadingOverlay.add(loadingText);
+        loadingOverlay.setVisible(false);
+        questionCountSpinner = new JSpinner(new SpinnerNumberModel(10, 5, 30, 1));
+        JComponent editor = questionCountSpinner.getEditor();
+        if (editor instanceof JSpinner.DefaultEditor) {
+            JFormattedTextField textField = ((JSpinner.DefaultEditor) editor).getTextField();
+            textField.setBackground(new Color(50, 50, 50));
+            textField.setForeground(Color.WHITE);
+            textField.setCaretColor(Color.WHITE);
+            textField.setEditable(true);
+        }
+
+        chatInput = new JTextField() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                setBackground(isDarkMode() ? Color.BLACK : Color.WHITE);
+                setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                setCaretColor(isDarkMode() ? Color.WHITE : Color.BLACK);
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(isDarkMode() ? Color.BLACK : Color.WHITE);
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 25, 25);
+                if (hasFocus() || getMousePosition() != null) {
+                    float[] fractions = {0.0f, 0.5f, 1.0f};
+                    Color[] colors = {new Color(0, 255, 255), new Color(255, 0, 255), new Color(255, 165, 0)};
+                    g2.setPaint(new LinearGradientPaint(0, 0, getWidth(), getHeight(), fractions, colors));
+                    g2.setStroke(new BasicStroke(2.0f));
+                    g2.drawRoundRect(1, 1, getWidth()-2, getHeight()-2, 25, 25);
+                }
+                g2.dispose();
+                super.paintComponent(g);
+            }
+        };
+
+        sendButton = new JButton();
+
+        chatBox = new JPanel() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                setBackground(isDarkMode() ? new Color(28, 28, 28) : new Color(245, 245, 250));
+                super.paintComponent(g);
+            }
+        };
+
+        chatArea = new JTextArea();
+
+        difficultyLabel = new JLabel("Question #1 | Current Level: EASY", SwingConstants.CENTER) {
+            @Override
+            protected void paintComponent(Graphics g) {
+                setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                super.paintComponent(g);
+            }
+        };
+
+        questionArea = new JTextArea() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                setBackground(isDarkMode() ? new Color(28, 28, 28) : new Color(245, 245, 250));
+                setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                super.paintComponent(g);
+            }
+        };
+        questionArea.setEditable(false);
+        questionArea.setLineWrap(true);
+        questionArea.setWrapStyleWord(true);
+
+        btnA = createOptionButton("-", new Color(52, 152, 219));
+        btnB = createOptionButton("-", new Color(155, 89, 182));
+        btnC = createOptionButton("-", new Color(46, 204, 113));
+        btnD = createOptionButton("-", new Color(241, 196, 15));
+        attachVoice(btnA);
+        attachVoice(btnB);
+        attachVoice(btnC);
+        attachVoice(btnD);
+
+        questionArea.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (currentQuestion != null) {
+                    tts.speak(currentQuestion.questionText);
+                }
+            }
+        });
+        aiStatusLabel = new JLabel("AI Status: Ready", SwingConstants.CENTER);
+        aiStatusLabel.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        aiStatusLabel.setForeground(Color.LIGHT_GRAY);
+    }
+
+    public void switchToQuizMode() {
+        isChatMode = false;
+        isAudioMode = false;
+        animatePanelTransition("QUIZ");
+    }
+
+    public void switchToChatMode() {
+        isChatMode = true;
+        isAudioMode = false;
+        animatePanelTransition("CHAT");
+    }
+
+    public void switchToAudioMode() {
+        isChatMode = false;
+        isAudioMode = true;
+        animatePanelTransition("AUDIO");
+    }
+
+    private void animatePanelTransition(String targetPanel) {
+        cardLayout.show(mainCardPanel, targetPanel);
+        revalidate();
+        repaint();
+    }
+
+    private JPanel createQuizPanel() {
+        JPanel mainPanel = new JPanel(new BorderLayout(20, 0));
+
+        JPanel sidebar = new JPanel() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                setBackground(isDarkMode() ? new Color(35, 35, 35) : new Color(230, 230, 235));
+                super.paintComponent(g);
+            }
+        };
+        sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
+        sidebar.setPreferredSize(new Dimension(300, 850));
+        sidebar.setBorder(BorderFactory.createEmptyBorder(25, 20, 25, 20));
+
+        // 1. MASTERY CONTAINER (Hidden until quiz starts)
+        masteryContainer = new JPanel();
+        masteryContainer.setLayout(new BoxLayout(masteryContainer, BoxLayout.Y_AXIS));
+        masteryContainer.setOpaque(false);
+
+        JLabel mTitle = new JLabel("OVERALL MASTERY");
+        mTitle.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        mTitle.setForeground(Color.GRAY);
+        mTitle.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        quizMasteryRing.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        aiStatusLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        masteryContainer.add(mTitle);
+        masteryContainer.add(Box.createRigidArea(new Dimension(0, 15)));
+        masteryContainer.add(quizMasteryRing);
+        masteryContainer.add(Box.createRigidArea(new Dimension(0, 15))); // Balanced spacing
+        masteryContainer.add(aiStatusLabel); // Status is placed cleanly below the circle
+
+        masteryContainer.setVisible(false); // Hidden by default
+
+        sidebar.add(masteryContainer);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 35))); // Pushes timer slightly down
+
+        // 2. TIMER
+        addSidebarSection(sidebar, "QUIZ DURATION", clockTimer);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 5)));
+        timerLabel = new JLabel("Timer: Off", SwingConstants.CENTER);
+        timerLabel.setFont(new Font("Segoe UI", Font.ITALIC, 11));
+        timerLabel.setForeground(Color.LIGHT_GRAY);
+        timerLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(timerLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 25)));
+
+        // --- HIDDEN DURING QUIZ BLOCK ---
+        countLabel = new JLabel("QUESTIONS TO GENERATE");
+        countLabel.setFont(new Font("Segoe UI", Font.BOLD, 10));
+        countLabel.setForeground(Color.GRAY);
+        countLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(countLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 8)));
+
+        btnConfigQuiz = new JButton("CONFIGURE QUIZ") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(isEnabled() ? new Color(155, 89, 182) : Color.DARK_GRAY);
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 25, 25);
+                super.paintComponent(g);
+                g2.dispose();
+            }
+        };
+        styleSidebarButton(btnConfigQuiz);
+        btnConfigQuiz.addActionListener(e -> {
+            QuizConfigDialog dialog = new QuizConfigDialog(this);
+            dialog.setVisible(true);
+            if (dialog.isConfirmed()) {
+                targetTheoryCount = dialog.getTheoryCount();
+                targetNumericalCount = dialog.getNumericalCount();
+                updateStatus("Ready: " + (targetTheoryCount + targetNumericalCount) + " Questions");
+            }
+        });
+        sidebar.add(btnConfigQuiz);
+
+        loadingBar = new JProgressBar();
+        loadingBar.setIndeterminate(true);
+        loadingBar.setVisible(false);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 10)));
+        sidebar.add(loadingBar);
+
+        questionCountSpinner.setMaximumSize(new Dimension(240, 40));
+        questionCountSpinner.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 25)));
+
+        btnScan = new JButton("SCAN TEXTBOOK") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(new Color(0, 229, 255)); // Electric Cyan
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 25, 25);
+                super.paintComponent(g);
+                g2.dispose();
+            }
+        };
+        styleSidebarButton(btnScan);
+        btnScan.addActionListener(e -> performScan());
+        attachVoice(btnScan);
+        sidebar.add(btnScan);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 15)));
+        // --------------------------------
+
+        // 3. VOICE SPEED & PITCH
+        autoAddSidebarLabel(sidebar, "VOICE SPEED (RATE)");
+        JSlider rateSlider = createModernSlider(100, 200, 130);
+        rateSlider.addChangeListener(e -> tts.setRate(rateSlider.getValue()));
+        rateSlider.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                int percent = (int)((rateSlider.getValue() - 100) / (200.0 - 100.0) * 100);
+                tts.speak("Speed set to " + percent + " percent");
+            }
+        });
+        sidebar.add(rateSlider);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 15)));
+
+        autoAddSidebarLabel(sidebar, "VOICE PITCH");
+        JSlider pitchSlider = createModernSlider(50, 150, 110);
+        pitchSlider.addChangeListener(e -> tts.setPitch(pitchSlider.getValue()));
+        pitchSlider.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                int percent = (int)((pitchSlider.getValue() - 50) / (150.0 - 50.0) * 100);
+                tts.speak("Pitch set to " + percent + " percent");
+            }
+        });
+        sidebar.add(pitchSlider);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 10)));
+
+        // 4. TEST VOICE
+        JButton btnTestVoice = new JButton("TEST VOICE") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(getModel().isRollover() ? new Color(100, 100, 100) : new Color(60, 60, 60));
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
+                super.paintComponent(g);
+                g2.dispose();
+            }
+        };
+        styleSidebarButton(btnTestVoice);
+        attachVoice(btnTestVoice);
+        btnTestVoice.addActionListener(e -> {
+            tts.speak("Testing voice speed and pitch. Is this comfortable for you?");
+        });
+        sidebar.add(btnTestVoice);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 25)));
+
+        // 5. END QUIZ
+        JButton btnEndQuiz = new JButton("END QUIZ") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(getModel().isRollover() ? new Color(255, 82, 82) : new Color(255, 82, 82, 180));
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 25, 25);
+                super.paintComponent(g);
+                g2.dispose();
+            }
+        };
+        styleSidebarButton(btnEndQuiz);
+        btnEndQuiz.addActionListener(e -> {
+            if (quizTimer != null) quizTimer.stop();
+            if (clockTimer != null) {
+                clockTimer.setRunning(false);
+                clockTimer.setSeconds(0);
+            }
+            // Save current session's graph data to the most recent file
+            if (!recentFilesList.isEmpty() && !studentHistory.isEmpty()) {
+                JsonObject lastFile = recentFilesList.get(0);
+                JsonArray histArray = new JsonArray();
+                for (Float score : studentHistory) histArray.add(score);
+                lastFile.add("history", histArray);
+                saveRecentFiles();
+            }
+            stopZenMusic();
+            if (!sessionLog.isEmpty()) showPerformanceReport();
+            saveProgress();
+            easyQuestions.clear(); easyMediumQuestions.clear(); mediumQuestions.clear();
+            mediumHardQuestions.clear(); hardQuestions.clear(); expertQuestions.clear();
+            askedQuestionIDs.clear(); sessionLog.clear();
+            questionCounter = 0; currentQuestion = null; currentLevel = "EASY";
+            questionArea.setText("");
+            difficultyLabel.setText("Question #1 | Current Level: EASY");
+            difficultyLabel.setForeground(Color.WHITE);
+            resetButtonStyles();
+            btnA.setEnabled(false); btnB.setEnabled(false); btnC.setEnabled(false); btnD.setEnabled(false);
+            btnA.setText("-"); btnB.setText("-"); btnC.setText("-"); btnD.setText("-");
+
+            // --- RESTORE UI COMPONENTS AFTER QUIZ ---
+            btnConfigQuiz.setVisible(true);
+            btnScan.setVisible(true);
+            countLabel.setVisible(true);
+            questionCountSpinner.setVisible(true);
+            clockTimer.setEditable(true);
+            masteryContainer.setVisible(false);
+
+            this.setVisible(false);
+            if (cardLayout != null) cardLayout.show(mainCardPanel, "BLANK");
+            SwingUtilities.invokeLater(() -> {
+                homePageInstance = new PaLOHomePage(this);
+                homePageInstance.setVisible(true);
+            });
+        });
+        sidebar.add(btnEndQuiz);
+        attachVoice(btnEndQuiz);
+        sidebar.add(Box.createVerticalGlue());
+
+        JPanel quizContent = new JPanel(new BorderLayout(20, 20));
+        quizContent.setOpaque(false);
+        quizContent.setBorder(BorderFactory.createEmptyBorder(30, 10, 30, 30));
+        difficultyLabel.setFont(new Font("Segoe UI Semibold", Font.PLAIN, 18));
+        questionArea.setFont(new Font("Segoe UI", Font.PLAIN, 24));
+        questionArea.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(60, 60, 60), 1),
+                BorderFactory.createEmptyBorder(25, 30, 25, 30)
+        ));
+
+        JPanel btnGrid = new JPanel(new GridLayout(2, 2, 25, 25));
+        btnGrid.setOpaque(false);
+        btnGrid.add(btnA); btnGrid.add(btnB);
+        btnGrid.add(btnC); btnGrid.add(btnD);
+
+        quizContent.add(difficultyLabel, BorderLayout.NORTH);
+        JScrollPane qScroll = new JScrollPane(questionArea);
+        qScroll.getViewport().setOpaque(false);
+        qScroll.setOpaque(false);
+        qScroll.setBorder(null);
+        quizContent.add(qScroll, BorderLayout.CENTER);
+        quizContent.add(btnGrid, BorderLayout.SOUTH);
+
+        mainPanel.add(sidebar, BorderLayout.WEST);
+        mainPanel.add(quizContent, BorderLayout.CENTER);
+
+        return mainPanel;
+    }
+
+    private void styleSidebarButton(JButton btn) {
+        btn.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btn.setMaximumSize(new Dimension(240, 50));
+        btn.setPreferredSize(new Dimension(240, 50));
+        btn.setFont(new Font("Segoe UI Semibold", Font.PLAIN, 13));
+        btn.setForeground(Color.WHITE);
+        btn.setContentAreaFilled(false);
+        btn.setBorderPainted(false);
+        btn.setFocusPainted(false);
+        btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+    }
+
+    private JSlider createModernSlider(int min, int max, int value) {
+        JSlider slider = new JSlider(min, max, value);
+        slider.setOpaque(false);
+        slider.setForeground(currentAccentColor);
+        slider.setMaximumSize(new Dimension(240, 40));
+        slider.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        slider.setMajorTickSpacing((max - min) / 2);
+        slider.setPaintTicks(false);
+        return slider;
+    }
+
+    private JPanel createChatPanel() {
+        JPanel mainPanel = new JPanel(new BorderLayout(20, 0));
+
+        JPanel sidebar = new JPanel() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                setBackground(isDarkMode() ? new Color(35, 35, 35) : new Color(230, 230, 235));
+                super.paintComponent(g);
+            }
+        };
+        sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
+        sidebar.setPreferredSize(new Dimension(260, 850));
+        sidebar.setBorder(BorderFactory.createEmptyBorder(25, 20, 25, 20));
+
+        JLabel titleLabel = new JLabel("Talk to AI") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                super.paintComponent(g);
+            }
+        };
+        titleLabel.setFont(new Font("Segoe UI", Font.BOLD, 24));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        sidebar.add(titleLabel);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 25)));
+
+        JButton btnNewChat = createSidebarPillButton("NEW CHAT", new Color(60, 60, 60));
+        btnNewChat.setMaximumSize(new Dimension(220, 45));
+        btnNewChat.addActionListener(e -> startNewChat());
+        sidebar.add(btnNewChat);
+        sidebar.add(Box.createRigidArea(new Dimension(0, 30)));
+
+        this.recentChatsPanel = new JPanel();
+        recentChatsPanel.setLayout(new BoxLayout(recentChatsPanel, BoxLayout.Y_AXIS));
+        recentChatsPanel.setOpaque(false);
+
+        JScrollPane recentScroll = new JScrollPane(recentChatsPanel);
+        recentScroll.setOpaque(false);
+        recentScroll.getViewport().setOpaque(false);
+        recentScroll.setBorder(null);
+        sidebar.add(recentScroll);
+        sidebar.add(Box.createVerticalGlue());
+
+        JButton btnBack = new JButton("EXIT TO DASHBOARD") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(isDarkMode() ? Color.WHITE : new Color(50, 50, 50));
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
+                super.paintComponent(g);
+                g2.dispose();
+            }
+        };
+        btnBack.setMaximumSize(new Dimension(220, 50));
+        btnBack.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnBack.setForeground(Color.BLACK);
+        btnBack.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        btnBack.setContentAreaFilled(false);
+        btnBack.setBorderPainted(false);
+        btnBack.setFocusPainted(false);
+        btnBack.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        btnBack.addActionListener(e -> {
+            saveChatHistory();
+            this.setVisible(false);
+            new PaLOHomePage(this).setVisible(true);
+        });
+        sidebar.add(btnBack);
+
+        JPanel chatContent = new JPanel(new BorderLayout(0, 0));
+        chatContent.setOpaque(false);
+        chatContent.setBorder(BorderFactory.createEmptyBorder(15, 10, 10, 20));
+
+        chatBox.setLayout(new BoxLayout(chatBox, BoxLayout.Y_AXIS));
+
+        JScrollPane chatScroll = new JScrollPane(chatBox);
+        chatScroll.setBorder(null);
+        chatScroll.getVerticalScrollBar().setUnitIncrement(16);
+        chatScroll.setOpaque(false);
+        chatScroll.getViewport().setOpaque(false);
+
+        JPanel inputWrapper = new JPanel(new FlowLayout(FlowLayout.CENTER, 15, 10));
+        inputWrapper.setOpaque(false);
+
+        chatInput.setOpaque(false);
+        chatInput.setPreferredSize(new Dimension(450, 50));
+        chatInput.setBorder(BorderFactory.createEmptyBorder(10, 18, 10, 18));
+        chatInput.addActionListener(e -> sendChatMessage());
+
+        sendButton = new JButton() {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                float[] fractions = {0.0f, 0.5f, 1.0f};
+                Color[] colors = {new Color(0, 255, 255), new Color(255, 0, 255), new Color(255, 165, 0)};
+                g2.setPaint(new LinearGradientPaint(0, 0, getWidth(), getHeight(), fractions, colors));
+                g2.setStroke(new BasicStroke(getModel().isRollover() ? 3.5f : 2.0f));
+                g2.drawRoundRect(2, 2, getWidth()-4, getHeight()-4, 20, 20);
+                g2.setColor(isDarkMode() ? new Color(40, 40, 40) : Color.WHITE);
+                g2.fillRoundRect(4, 4, getWidth()-8, getHeight()-8, 20, 20);
+                g2.setColor(isDarkMode() ? Color.WHITE : Color.BLACK);
+                int size = 8;
+                Path2D.Double arrow = new Path2D.Double();
+                arrow.moveTo(getWidth()/2.0 - size/2.0, getHeight()/2.0 - size);
+                arrow.lineTo(getWidth()/2.0 + size, getHeight()/2.0);
+                arrow.lineTo(getWidth()/2.0 - size/2.0, getHeight()/2.0 + size);
+                arrow.closePath();
+                g2.fill(arrow);
+                g2.dispose();
+            }
+        };
+        sendButton.setPreferredSize(new Dimension(85, 50));
+        sendButton.setContentAreaFilled(false);
+        sendButton.setBorderPainted(false);
+        sendButton.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        sendButton.addActionListener(e -> sendChatMessage());
+
+        inputWrapper.add(chatInput);
+        inputWrapper.add(sendButton);
+
+        chatContent.add(chatScroll, BorderLayout.CENTER);
+        chatContent.add(inputWrapper, BorderLayout.SOUTH);
+
+        mainPanel.add(sidebar, BorderLayout.WEST);
+        mainPanel.add(chatContent, BorderLayout.CENTER);
+
+        updateRecentChatsUI();
+        return mainPanel;
+    }
+
+    private class ChatBubble extends JPanel {
+        private JTextArea area;
+        private float alpha = 0.0f;
+
+        public ChatBubble(String text, boolean isUser) {
+            setLayout(new BoxLayout(this, BoxLayout.X_AXIS));
+            setOpaque(false);
+            setBorder(BorderFactory.createEmptyBorder(1, 15, 1, 15));
+
+            JLabel avatar = new JLabel(isUser ? "T" : "AI", SwingConstants.CENTER) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2.setColor(isUser ? new Color(52, 152, 219) : new Color(155, 89, 182));
+                    g2.fillOval(0, 0, getWidth(), getHeight());
+                    super.paintComponent(g);
+                    g2.dispose();
+                }
+            };
+            avatar.setPreferredSize(new Dimension(32, 32));
+            avatar.setMaximumSize(new Dimension(32, 32));
+            avatar.setForeground(Color.WHITE);
+            avatar.setFont(new Font("Segoe UI", Font.BOLD, 10));
+
+            this.area = new JTextArea(text) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                    super.paintComponent(g);
+                }
+            };
+            area.setLineWrap(true);
+            area.setWrapStyleWord(true);
+            area.setEditable(false);
+            area.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+            area.setOpaque(false);
+            area.setBorder(BorderFactory.createEmptyBorder(8, 15, 8, 15));
+
+            JPanel pill = new JPanel(new BorderLayout()) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, alpha));
+                    g2.setColor(isDarkMode() ? (isUser ? new Color(40, 40, 40) : new Color(30, 30, 30)) : (isUser ? new Color(220, 220, 225) : new Color(230, 230, 235)));
+                    g2.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
+                    g2.dispose();
+                }
+            };
+            pill.setOpaque(false);
+            pill.add(area, BorderLayout.CENTER);
+
+            int maxW = (int)(OfflineTutorApp.this.getWidth() * 0.50);
+            pill.setMaximumSize(new Dimension(maxW, Integer.MAX_VALUE));
+
+            if (isUser) {
+                add(Box.createHorizontalGlue());
+                add(pill);
+                add(Box.createRigidArea(new Dimension(8, 0)));
+                add(avatar);
+            } else {
+                add(avatar);
+                add(Box.createRigidArea(new Dimension(8, 0)));
+                add(pill);
+                add(Box.createHorizontalGlue());
+            }
+
+            new javax.swing.Timer(15, e -> {
+                alpha += 0.1f;
+                if (alpha >= 1.0f) { alpha = 1.0f; ((javax.swing.Timer)e.getSource()).stop(); }
+                repaint();
+            }).start();
+        }
+        public JTextArea getTextArea() { return this.area; }
+    }
+
+    private JButton createSidebarPillButton(String text, Color accent) {
+        JButton btn = new JButton(text) {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                if (getModel().isPressed()) g2.setColor(accent.darker());
+                else if (getModel().isRollover()) g2.setColor(accent.brighter());
+                else g2.setColor(accent);
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), getHeight(), getHeight());
+                g2.setColor(Color.WHITE);
+                g2.setFont(new Font("Segoe UI", Font.BOLD, 12));
+                FontMetrics fm = g2.getFontMetrics();
+                int x = (getWidth() - fm.stringWidth(getText())) / 2;
+                int y = (getHeight() + fm.getAscent()) / 2 - 2;
+                g2.drawString(getText(), x, y);
+                g2.dispose();
+            }
+        };
+        btn.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btn.setMaximumSize(new Dimension(240, 45));
+        btn.setContentAreaFilled(false);
+        btn.setBorderPainted(false);
+        btn.setFocusPainted(false);
+        btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        return btn;
+    }
+
     private void startVoiceRecognition() {
         JOptionPane.showMessageDialog(this, "Voice recognition feature coming soon!", "Audio Mode", JOptionPane.INFORMATION_MESSAGE);
     }
 
-    private void playQuestionAudio() {
-        JOptionPane.showMessageDialog(this, "Audio playback feature coming soon!", "Audio Mode", JOptionPane.INFORMATION_MESSAGE);
-    }
+    // Import the necessary LangChain4j classes at the top of your file:
+// import dev.langchain4j.model.ollama.OllamaChatModel;
+// import dev.langchain4j.service.AiServices;
+// import java.time.Duration;
 
-    /**
-     * Initializes the Deep Java Library (DJL) engine and loads the local
-     * predictor model for adaptive learning difficulty estimation.
-     */
     private void initAI() {
         try {
-            // Paths to your local PyTorch model file
+            // --- 1. Existing DJL/PyTorch Initialization ---
             Path modelPath = Paths.get("tutor_brain.pt");
+            boolean neuralLoaded = false;
 
-            // Checking if model exists before attempting load to prevent crash
-            if (!modelPath.toFile().exists()) {
-                System.err.println("AI Engine: Model file 'tutor_brain.pt' not found. Running in rule-based mode.");
-                return;
+            if (modelPath.toFile().exists()) {
+                Model model = Model.newInstance("AdaptiveTutor");
+                model.load(modelPath);
+                this.predictor = model.newPredictor(new TutorTranslator());
+                neuralLoaded = true;
+            } else {
+                System.err.println("AI Engine: 'tutor_brain.pt' not found. Predictive scaling disabled.");
             }
 
-            Model model = Model.newInstance("AdaptiveTutor");
-            model.load(modelPath);
+            // --- 2. New LangChain4j / Ollama Integration ---
+            // We initialize the Ollama model (ensure Ollama is running on port 11434)
+            dev.langchain4j.model.chat.ChatLanguageModel ollamaModel = dev.langchain4j.model.ollama.OllamaChatModel.builder()
+                    .baseUrl("http://localhost:11434")
+                    .modelName("llama3") // You can change this to "phi3", "mistral", etc.
+                    .timeout(Duration.ofMinutes(2))
+                    .temperature(0.3)    // Lower temperature for more consistent MCQ generation
+                    .build();
 
-            // TutorTranslator is the inner class defined at the bottom of your file
-            this.predictor = model.newPredictor(new TutorTranslator());
+            // Create the AI Service (TutorAssistant is the interface you define for MCQs)
+            this.tutorAssistant = dev.langchain4j.service.AiServices.create(TutorAssistant.class, ollamaModel);
 
+            // --- 3. UI Status Update ---
+            final boolean isNeural = neuralLoaded;
             SwingUtilities.invokeLater(() -> {
-                if (aiStatusLabel != null) aiStatusLabel.setText("AI Engine: Neural Network Loaded");
+                if (aiStatusLabel != null) {
+                    String status = isNeural ? "Neural + LangChain Ready" : "LangChain Ready (Rule-based scaling)";
+                    aiStatusLabel.setText("AI Engine: " + status);
+                    aiStatusLabel.setForeground(new Color(46, 204, 113)); // Success Green
+                }
             });
+
         } catch (Exception e) {
             System.err.println("AI Initialization Error: " + e.getMessage());
-            // Fallback: predictor remains null, updateAI handles this gracefully
+            SwingUtilities.invokeLater(() -> {
+                if (aiStatusLabel != null) {
+                    aiStatusLabel.setText("AI Engine: Connection Error");
+                    aiStatusLabel.setForeground(Color.RED);
+                }
+            });
         }
     }
 
-    private void updateOllamaStatusLabel(JLabel statusLabel) {
-        if (statusLabel == null) return;
-        if (llamaConnection.isAvailable()) {
-            statusLabel.setForeground(new Color(46, 204, 113));
-            statusLabel.setText("Connected · " + llamaConnection.getModelName());
-        } else {
-            statusLabel.setForeground(new Color(231, 76, 60));
-            statusLabel.setText("Ollama not running");
-        }
-    }
 
-    /**
-     * Enable quiz controls after scanning
-     */
-    private void enableQuizControls() {
-        SwingUtilities.invokeLater(() -> {
-            if (questionCountSpinner != null) {
-                questionCountSpinner.setEnabled(true);
-                JComponent editor = questionCountSpinner.getEditor();
-                if (editor instanceof JSpinner.DefaultEditor) {
-                    JFormattedTextField textField = ((JSpinner.DefaultEditor) editor).getTextField();
-                    textField.setEditable(true);
-                }
-            }
-            if (clockTimer != null) {
-                clockTimer.setEnabled(true);
-            }
-        });
-    }
-
-    /**
-     * Disable quiz controls until scanning
-     */
-    private void disableQuizControls() {
-        SwingUtilities.invokeLater(() -> {
-            if (questionCountSpinner != null) {
-                questionCountSpinner.setEnabled(false);
-                JComponent editor = questionCountSpinner.getEditor();
-                if (editor instanceof JSpinner.DefaultEditor) {
-                    JFormattedTextField textField = ((JSpinner.DefaultEditor) editor).getTextField();
-                    textField.setEditable(false);
-                }
-            }
-            if (clockTimer != null) {
-                clockTimer.setEnabled(false);
-            }
-        });
-    }
 
     private void sendChatMessage() {
         String userMessage = chatInput.getText().trim();
         if (userMessage.isEmpty()) return;
 
-        chatArea.append("You: " + userMessage + "\n\nAI: ");
+        chatBox.add(new ChatBubble(userMessage, true));
+        chatBox.add(Box.createRigidArea(new Dimension(0, 5)));
         chatInput.setText("");
-        chatArea.setCaretPosition(chatArea.getDocument().getLength());
+
+        ChatBubble aiResponseBubble = new ChatBubble("", false);
+        chatBox.add(aiResponseBubble);
+        chatBox.add(Box.createRigidArea(new Dimension(0, 5)));
+
+        JTextArea aiTextArea = aiResponseBubble.getTextArea();
+        aiTextArea.setText("Thinking...");
+
+        chatBox.revalidate();
+        chatBox.repaint();
+        scrollToBottom();
 
         chatInput.setEnabled(false);
         sendButton.setEnabled(false);
-        sendButton.setText("Thinking...");
 
         new Thread(() -> {
             try {
-                // MATCHING THE INTERFACE: handleToken and handleComplete
                 llamaConnection.askStreaming(userMessage, new LlamaConnection.StreamHandler() {
-
+                    boolean firstToken = true;
                     @Override
                     public void handleToken(String token) {
                         SwingUtilities.invokeLater(() -> {
-                            chatArea.append(token);
-                            chatArea.setCaretPosition(chatArea.getDocument().getLength());
+                            if (firstToken) {
+                                aiTextArea.setText("");
+                                firstToken = false;
+                            }
+                            aiTextArea.append(token);
+                            chatBox.revalidate();
+                            scrollToBottom();
                         });
                     }
-
                     @Override
                     public void handleComplete() {
                         SwingUtilities.invokeLater(() -> {
-                            chatArea.append("\n\n");
                             finishGeneration();
+                            saveChatHistory();
+                            updateRecentChatsUI();
                         });
                     }
                 });
-
             } catch (Exception ex) {
                 SwingUtilities.invokeLater(() -> {
-                    chatArea.append("\n[Error: " + ex.getMessage() + "]\n\n");
+                    aiTextArea.setText("Error: " + ex.getMessage());
                     finishGeneration();
                 });
             }
         }).start();
     }
 
-    // Helper to tidy up UI state
+    private void updateRecentChatsUI() {
+        recentChatsPanel.removeAll();
+        File folder = new File("chats/");
+        if (!folder.exists()) folder.mkdir();
+        File[] files = folder.listFiles((dir, name) -> name.endsWith(".json"));
+        if (files == null) return;
+        Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+
+        for (File f : files) {
+            JPanel entryPanel = new JPanel(new BorderLayout(8, 0));
+            entryPanel.setOpaque(false);
+            entryPanel.setMaximumSize(new Dimension(280, 45));
+
+            String fileName = f.getName().replace(".json", "");
+            String displayName = fileName.length() > 18 ? fileName.substring(0, 16) + ".." : fileName;
+
+            JButton snippet = createSidebarPillButton(displayName, new Color(50, 50, 50));
+            snippet.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+            snippet.addActionListener(e -> loadSpecificChat(f));
+
+            JButton btnDel = new JButton("X") {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g2.setColor(getModel().isRollover() ? new Color(231, 76, 60) : new Color(255, 255, 255, 80));
+                    g2.setFont(getFont());
+                    FontMetrics fm = g2.getFontMetrics();
+                    g2.drawString(getText(), (getWidth()-fm.stringWidth(getText()))/2, (getHeight()+fm.getAscent())/2 - 2);
+                    g2.dispose();
+                }
+            };
+            btnDel.setPreferredSize(new Dimension(30, 45));
+            btnDel.setContentAreaFilled(false);
+            btnDel.setBorderPainted(false);
+            btnDel.setFocusPainted(false);
+            btnDel.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+            btnDel.addActionListener(e -> {
+                int confirm = JOptionPane.showConfirmDialog(this,
+                        "Permanently delete this chat history?", "Confirm Delete",
+                        JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+                if (confirm == JOptionPane.YES_OPTION) {
+                    if (f.delete()) {
+                        updateRecentChatsUI();
+                        chatBox.removeAll();
+                        chatBox.revalidate();
+                        chatBox.repaint();
+                    }
+                }
+            });
+
+            entryPanel.add(snippet, BorderLayout.CENTER);
+            entryPanel.add(btnDel, BorderLayout.EAST);
+            recentChatsPanel.add(entryPanel);
+            recentChatsPanel.add(Box.createRigidArea(new Dimension(0, 10)));
+        }
+        recentChatsPanel.revalidate();
+        recentChatsPanel.repaint();
+    }
+
+    private void loadSpecificChat(File file) {
+        chatBox.removeAll();
+        try (Scanner scanner = new Scanner(file)) {
+            String content = scanner.useDelimiter("\\Z").next();
+            JsonArray history = JsonParser.parseString(content).getAsJsonArray();
+            for (int i = 0; i < history.size(); i++) {
+                JsonObject msg = history.get(i).getAsJsonObject();
+                String text = msg.get("text").getAsString();
+                boolean isUser = msg.get("isUser").getAsBoolean();
+                chatBox.add(new ChatBubble(text, isUser));
+                chatBox.add(Box.createRigidArea(new Dimension(0, 5)));
+            }
+            chatBox.revalidate();
+            chatBox.repaint();
+            scrollToBottom();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void saveChatHistory() {
+        if (chatBox.getComponentCount() == 0) return;
+        try {
+            File folder = new File("chats/");
+            if (!folder.exists()) folder.mkdir();
+            String firstMsg = "New Chat";
+            JsonArray history = new JsonArray();
+
+            for (Component c : chatBox.getComponents()) {
+                if (c instanceof ChatBubble) {
+                    ChatBubble b = (ChatBubble) c;
+                    String text = b.getTextArea().getText();
+                    if (firstMsg.equals("New Chat")) firstMsg = text.replaceAll("[^a-zA-Z0-String 0-9]", " ").trim();
+                    JsonObject obj = new JsonObject();
+                    obj.addProperty("text", text);
+                    obj.addProperty("isUser", b.getAlignmentX() == Component.RIGHT_ALIGNMENT);
+                    history.add(obj);
+                }
+            }
+            String fileName = (firstMsg.length() > 20 ? firstMsg.substring(0, 20) : firstMsg) + ".json";
+            try (FileWriter writer = new FileWriter(new File(folder, fileName))) {
+                writer.write(history.toString());
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void startNewChat() {
+        saveChatHistory();
+        chatBox.removeAll();
+        chatBox.add(new ChatBubble("Hello! How can I help you today?", false));
+        updateRecentChatsUI();
+        chatBox.revalidate();
+    }
+
+    private void scrollToBottom() {
+        SwingUtilities.invokeLater(() -> {
+            JScrollBar vertical = ((JScrollPane)chatBox.getParent().getParent()).getVerticalScrollBar();
+            vertical.setValue(vertical.getMaximum());
+        });
+    }
+
     private void finishGeneration() {
-        chatInput.setEnabled(true);
-        sendButton.setEnabled(true);
-        sendButton.setText("Send");
-        chatInput.requestFocus();
-        chatArea.setCaretPosition(chatArea.getDocument().getLength());
+        SwingUtilities.invokeLater(() -> {
+            chatInput.setEnabled(true);
+            sendButton.setEnabled(true);
+            sendButton.setText(">");
+            chatInput.requestFocusInWindow();
+            chatBox.revalidate();
+            chatBox.repaint();
+            scrollToBottom();
+        });
     }
 
     private void addSidebarSection(JPanel p, String title, JComponent comp) {
@@ -1550,7 +1852,6 @@ public class OfflineTutorApp extends JFrame {
         p.add(comp);
     }
 
-    // Helper to keep sidebar text consistent
     private void autoAddSidebarLabel(JPanel panel, String text) {
         JLabel l = new JLabel(text);
         l.setFont(new Font("Segoe UI", Font.BOLD, 11));
@@ -1560,20 +1861,9 @@ public class OfflineTutorApp extends JFrame {
         panel.add(Box.createRigidArea(new Dimension(0, 8)));
     }
 
-    private JButton createStyledOptionButton(String text) {
-        JButton btn = new JButton(text);
-        btn.setPreferredSize(new Dimension(0, 80));
-        btn.setFont(new Font("Segoe UI", Font.PLAIN, 18));
-        btn.addActionListener(e -> checkAnswer(btn.getText()));
-        return btn;
-    }
-
     private void updateStatus(String text) {
-        if (aiStatusLabel != null) {
-            aiStatusLabel.setText(text);
-        } else {
-            System.out.println("Status Update: " + text); // Fallback to console if UI isn't ready
-        }
+        if (aiStatusLabel != null) aiStatusLabel.setText(text);
+        else System.out.println("Status Update: " + text);
     }
 
     private void startNewTimer() {
@@ -1581,12 +1871,11 @@ public class OfflineTutorApp extends JFrame {
         if (quizTimer != null) quizTimer.stop();
 
         secondsRemaining = userSelectedTime;
-        clockTimer.setRunning(true); // Disable manual dragging during quiz
+        clockTimer.setRunning(true);
 
         quizTimer = new javax.swing.Timer(1000, e -> {
             secondsRemaining--;
             clockTimer.setSeconds(secondsRemaining);
-
             if (secondsRemaining <= 0) {
                 quizTimer.stop();
                 clockTimer.setRunning(false);
@@ -1601,19 +1890,22 @@ public class OfflineTutorApp extends JFrame {
         checkAnswer("TIMEOUT");
     }
 
+    private void attachVoice(JButton btn) {
+        btn.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseEntered(java.awt.event.MouseEvent e) {
+                String cleanText = btn.getText().replaceAll("<[^>]*>", "").trim();
+                if (!cleanText.equals("-")) tts.speak(cleanText);
+            }
+        });
+    }
+
     private QuizOptionButton createOptionButton(String text, Color uniqueColor) {
         QuizOptionButton btn = new QuizOptionButton(text, uniqueColor);
-        btn.setEnabled(false); // Enable this only after a scan
+        btn.setEnabled(false);
         return btn;
     }
 
-    // Helper to determine if text should be black or white for best minimalist contrast
-    private boolean isColorBright(Color c) {
-        double luminance = (0.299 * c.getRed() + 0.587 * c.getGreen() + 0.114 * c.getBlue()) / 255;
-        return luminance > 0.6;
-    }
-
-    // --- LOGIC: CHECK ANSWER ---
     private void checkAnswer(QuizOptionButton selectedBtn) {
         handleAnswerSelection(selectedBtn.getText(), selectedBtn);
     }
@@ -1626,38 +1918,35 @@ public class OfflineTutorApp extends JFrame {
         if (quizTimer != null) quizTimer.stop();
         if (currentQuestion == null) return;
 
-        // Log the user selection
-        currentQuestion.userProvidedAnswer = selectedText;
+        // --- BUG FIX: Clean HTML tags injected by the UI button formatting ---
+        String cleanSelectedText = selectedText.replaceAll("<[^>]*>", "").trim();
+        String cleanCorrectAnswer = currentQuestion.correctAnswer.replaceAll("<[^>]*>", "").trim();
+
+        currentQuestion.userProvidedAnswer = cleanSelectedText;
         sessionLog.add(currentQuestion);
 
-        boolean isCorrect = selectedText.equals(currentQuestion.correctAnswer);
+        // Compare the cleaned strings instead of the raw HTML
+        boolean isCorrect = cleanSelectedText.equalsIgnoreCase(cleanCorrectAnswer);
         float score = isCorrect ? 1.0f : 0.0f;
 
-        // 1. Logic Updates
+        if (!isCorrect && !reviewFlashcards.contains(currentQuestion)) {
+            reviewFlashcards.add(currentQuestion);
+        }
+
         studentHistory.add(score);
-        updateAI(score);
+        updateAI(score); // This will now accurately receive 1.0f or 0.0f
         removeQuestionFromPools(currentQuestion);
 
-        // 2. Advanced Visual Feedback
-        // Disable all buttons immediately to prevent multiple clicks
         btnA.setEnabled(false); btnB.setEnabled(false);
         btnC.setEnabled(false); btnD.setEnabled(false);
 
         if (isCorrect) {
-            // Correct Choice: Solid Green Glow
             selectedBtn.setCorrectGlow();
         } else {
-            // Incorrect Choice: User selection blinks Red
-            if (selectedBtn != null) {
-                selectedBtn.startErrorBlink();
-            }
-
-            // Reveal the correct answer with a Green Glow
+            if (selectedBtn != null) selectedBtn.startErrorBlink();
             revealCorrectAnswer();
         }
 
-        // 3. Smooth Transition
-        // 1.5s pause allows the user to observe the blink and the reveal
         javax.swing.Timer transitionTimer = new javax.swing.Timer(1500, e -> {
             SwingUtilities.invokeLater(() -> loadNextQuestion(this.currentLevel));
         });
@@ -1665,12 +1954,8 @@ public class OfflineTutorApp extends JFrame {
         transitionTimer.start();
     }
 
-    /**
-     * Helper to find and highlight the correct button when the user fails.
-     */
     private void revealCorrectAnswer() {
         String correct = currentQuestion.correctAnswer;
-        // Use getText().contains because HTML tags surround the text
         if (btnA.getText().contains(correct)) btnA.setCorrectGlow();
         else if (btnB.getText().contains(correct)) btnB.setCorrectGlow();
         else if (btnC.getText().contains(correct)) btnC.setCorrectGlow();
@@ -1683,13 +1968,13 @@ public class OfflineTutorApp extends JFrame {
             return;
         }
 
-        // --- 1. CALCULATE STATISTICS ---
         long total = sessionLog.size();
         long correctCount = sessionLog.stream()
-                .filter(q -> q.userProvidedAnswer.equals(q.correctAnswer)).count();
-        double accuracy = (double) correctCount / total * 100;
+                .filter(q -> q.userProvidedAnswer.replaceAll("<[^>]*>", "").trim()
+                        .equalsIgnoreCase(q.correctAnswer.replaceAll("<[^>]*>", "").trim()))
+                .count();
 
-        // Determine Grade
+        double accuracy = (double) correctCount / total * 100;
         String grade;
         Color gradeColor;
         if (accuracy >= 90) { grade = "A+"; gradeColor = new Color(46, 204, 113); }
@@ -1697,25 +1982,21 @@ public class OfflineTutorApp extends JFrame {
         else if (accuracy >= 50) { grade = "C"; gradeColor = new Color(230, 126, 34); }
         else { grade = "D"; gradeColor = new Color(231, 76, 60); }
 
-        // --- 2. CREATE THE DIALOG ---
         JDialog reportDialog = new JDialog(this, "Student Report Card", true);
-        reportDialog.setSize(700, 600);
+        reportDialog.setSize(1000, 650);
         reportDialog.setLocationRelativeTo(this);
         reportDialog.setLayout(new BorderLayout());
 
-        // --- 3. HEADER PANEL (Grade & Summary) ---
         JPanel header = new JPanel(new GridLayout(1, 2));
-        header.setBackground(new Color(35, 35, 35));
+        header.setBackground(new Color(30, 30, 30));
         header.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
 
-        // Left side: Large Grade
         JLabel gradeLabel = new JLabel(grade, SwingConstants.CENTER);
-        gradeLabel.setFont(new Font("Serif", Font.BOLD, 80));
+        gradeLabel.setFont(new Font("Serif", Font.BOLD, 100));
         gradeLabel.setForeground(gradeColor);
         gradeLabel.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(gradeColor), "FINAL GRADE", 0, 0, null, Color.GRAY));
+                BorderFactory.createLineBorder(gradeColor, 2), "FINAL GRADE", 0, 0, null, Color.GRAY));
 
-        // Right side: Statistics
         String statsHtml = "<html><body style='font-family:Segoe UI; color:white;'>" +
                 "<h2 style='margin:0;'>PERFORMANCE SUMMARY</h2><br>" +
                 "<b>Subject:</b> " + selectedSubject + "<br>" +
@@ -1728,35 +2009,90 @@ public class OfflineTutorApp extends JFrame {
         header.add(gradeLabel);
         header.add(statsLabel);
 
-        // --- 4. DATA TABLE (Detailed Breakdown) ---
         String[] columns = {"Status", "Topic / Question", "Your Choice", "Correct Answer"};
-        DefaultTableModel model = new DefaultTableModel(columns, 0);
+        DefaultTableModel model = new DefaultTableModel(columns, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) { return false; }
+        };
+
         for (QuizItem q : sessionLog) {
-            boolean isCorrect = q.userProvidedAnswer.equals(q.correctAnswer);
-            model.addRow(new Object[]{
-                    isCorrect ? "PASS" : "FAIL",
-                    q.displaySentence.length() > 60 ? q.displaySentence.substring(0, 60) + "..." : q.displaySentence,
-                    q.userProvidedAnswer,
-                    q.correctAnswer
-            });
+            String userAns = q.userProvidedAnswer.replaceAll("<[^>]*>", "").trim();
+            String correctAns = q.correctAnswer.replaceAll("<[^>]*>", "").trim();
+            boolean isCorrect = userAns.equalsIgnoreCase(correctAns);
+            model.addRow(new Object[]{ isCorrect ? "✔ PASS" : "✘ FAIL", q.displaySentence, userAns, correctAns });
         }
 
-        JTable table = new JTable(model);
-        table.setRowHeight(30);
-        table.setEnabled(false); // Make table read-only
-        JScrollPane scrollPane = new JScrollPane(table);
-        scrollPane.setBorder(BorderFactory.createTitledBorder("DETAILED BREAKDOWN"));
+        JTable table = new JTable(model) {
+            @Override
+            public Component prepareRenderer(javax.swing.table.TableCellRenderer renderer, int row, int column) {
+                Component c = super.prepareRenderer(renderer, row, column);
+                if (c instanceof JComponent) {
+                    Object value = getValueAt(row, column);
+                    if (value != null) {
+                        ((JComponent) c).setToolTipText("<html><p style='width: 300px;'>" + value.toString() + "</p></html>");
+                    }
+                }
+                return c;
+            }
+        };
 
-        // --- 5. FOOTER ---
-        JButton closeBtn = new JButton("Close Report");
+        table.setRowHeight(35);
+        table.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        table.setBackground(new Color(45, 45, 45));
+        table.setForeground(Color.WHITE);
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+
+        for (int column = 0; column < table.getColumnCount(); column++) {
+            javax.swing.table.TableColumn tableColumn = table.getColumnModel().getColumn(column);
+            int preferredWidth = tableColumn.getMinWidth();
+            int maxWidthThreshold = (column == 1) ? 500 : 250;
+
+            javax.swing.table.TableCellRenderer headerRenderer = table.getTableHeader().getDefaultRenderer();
+            Component headerComp = headerRenderer.getTableCellRendererComponent(table, tableColumn.getHeaderValue(), false, false, 0, column);
+            preferredWidth = Math.max(preferredWidth, headerComp.getPreferredSize().width + 25);
+
+            for (int row = 0; row < table.getRowCount(); row++) {
+                javax.swing.table.TableCellRenderer cellRenderer = table.getCellRenderer(row, column);
+                Component cellComp = table.prepareRenderer(cellRenderer, row, column);
+                preferredWidth = Math.max(preferredWidth, cellComp.getPreferredSize().width + 25);
+                if (preferredWidth >= maxWidthThreshold) {
+                    preferredWidth = maxWidthThreshold;
+                    break;
+                }
+            }
+            tableColumn.setPreferredWidth(preferredWidth);
+        }
+
+        table.getColumnModel().getColumn(0).setCellRenderer(new javax.swing.table.DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
+                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+                if (value != null && value.toString().contains("PASS")) {
+                    c.setForeground(new Color(46, 204, 113));
+                    setFont(getFont().deriveFont(Font.BOLD));
+                } else {
+                    c.setForeground(new Color(231, 76, 60));
+                    setFont(getFont().deriveFont(Font.BOLD));
+                }
+                setHorizontalAlignment(JLabel.CENTER);
+                return c;
+            }
+        });
+
+        JScrollPane scrollPane = new JScrollPane(table);
+        scrollPane.getViewport().setBackground(new Color(35, 35, 35));
+        scrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+
+        JButton closeBtn = new JButton("CLOSE REPORT");
         closeBtn.addActionListener(e -> reportDialog.dispose());
+
         JPanel footer = new JPanel();
+        footer.setBackground(new Color(25, 25, 25));
         footer.add(closeBtn);
 
         reportDialog.add(header, BorderLayout.NORTH);
         reportDialog.add(scrollPane, BorderLayout.CENTER);
         reportDialog.add(footer, BorderLayout.SOUTH);
-
         reportDialog.setVisible(true);
     }
 
@@ -1771,114 +2107,93 @@ public class OfflineTutorApp extends JFrame {
     }
 
     private void updateAI(float score) {
-        float probability = 0.5f;
-
-        try {
-            if (predictor != null && !studentHistory.isEmpty()) {
-                // Convert the current history list to a primitive array
-                // The TutorTranslator will handle the specific 10-step windowing
-                float[] historyArray = new float[studentHistory.size()];
-                for (int i = 0; i < studentHistory.size(); i++) {
-                    historyArray[i] = studentHistory.get(i);
-                }
-
-                // Predict the mastery probability based on recent sequence
-                probability = predictor.predict(historyArray);
+        // --- RULE-BASED ADAPTIVE ENGINE ---
+        if (studentHistory.isEmpty()) {
+            currentProbability = 0.10f; // Start at 10% (EASY) for the first question
+        } else {
+            if (score >= 1.0f) {
+                currentProbability += 0.15f; // Increase probability on correct answer
+            } else {
+                currentProbability -= 0.15f; // Decrease probability on wrong answer or timeout
             }
-        } catch (Exception e) {
-            System.err.println("AI Prediction Error: " + e.getMessage());
-            probability = 0.5f; // Safe fallback
         }
 
-        // Convert probability to 0-100 scale for UI components
-        int percent = (int) (probability * 100);
+        // Clamp probability between 0.0 (0%) and 1.0 (100%)
+        currentProbability = Math.max(0.0f, Math.min(1.0f, currentProbability));
 
-        // Update the circular Mastery UI
-        if (circleMastery != null) {
-            circleMastery.setProgress(percent);
-        }
+        int percent = (int) (currentProbability * 100);
+        if (homeCircleMastery != null) homeCircleMastery.setProgress(percent);
 
-        // --- 6-TIER DIFFICULTY MAPPING ---
-        // Logic: Lower probability means the student is struggling -> EASY
-        // Higher probability means mastery is high -> EXPERT
         String targetLevel;
         Color statusColor;
 
-        if (percent < 15) {
+        // --- DIFFICULTY THRESHOLDS ---
+        if (percent <= 33) {
             targetLevel = "EASY";
-            statusColor = new Color(46, 204, 113); // Emerald Green
-        } else if (percent < 30) {
-            targetLevel = "EASY-MEDIUM";
-            statusColor = new Color(171, 235, 198); // Light Green
-        } else if (percent < 50) {
+            statusColor = new Color(46, 204, 113); // Green
+        } else if (percent <= 66) {
             targetLevel = "MEDIUM";
-            statusColor = new Color(241, 196, 15); // Sunflower Yellow
-        } else if (percent < 70) {
-            targetLevel = "MEDIUM-HARD";
-            statusColor = new Color(230, 126, 34); // Carrot Orange
-        } else if (percent < 85) {
-            targetLevel = "HARD";
-            statusColor = new Color(231, 76, 60); // Alizarin Red
+            statusColor = new Color(241, 196, 15); // Yellow
         } else {
             targetLevel = "EXPERT";
-            statusColor = new Color(155, 89, 182); // Amethyst Purple
+            statusColor = new Color(155, 89, 182); // Purple
         }
 
-        // Update Sidebar Status
+        // Pass both percentage and color to the new Quiz Ring
+        if (quizMasteryRing != null) quizMasteryRing.setProgress(percent, statusColor);
+
         if (aiStatusLabel != null) {
             aiStatusLabel.setForeground(statusColor);
             aiStatusLabel.setText("Status: " + targetLevel + " (" + percent + "%)");
         }
-
-        // Update global state for the loadNextQuestion method
         this.currentLevel = targetLevel;
-
-        // System.out.println("LSTM Input Size: " + studentHistory.size() + " | Mastery: " + percent + "%");
     }
 
-
     private void loadNextQuestion(String targetLevel) {
-        // 1. Determine which pool to use based on the AI's target level
-        List<QuizItem> pool = getPoolByLevel(targetLevel);
+        // FIXED: Use the actual configured targets instead of the old spinner
+        int userLimit = targetTheoryCount + targetNumericalCount;
 
-        // 2. Fallback Logic: If the target pool is empty, find the next available pool
-        if (pool == null || pool.isEmpty()) {
-            pool = findFirstAvailablePool(targetLevel);
+        if (questionCounter >= userLimit) {
+            finishQuiz();
+            return;
         }
 
-        // 3. If all pools are empty, the quiz is over
+        List<QuizItem> pool = getPoolByLevel(targetLevel);
+        if (pool == null || pool.isEmpty()) pool = findFirstAvailablePool(targetLevel);
         if (pool == null || pool.isEmpty()) {
             finishQuiz();
             return;
         }
 
-        // 4. Reset UI: Clear the green/red colors from the previous turn
-        resetButtonStyles();
+        try {
+            resetButtonStyles();
+            questionCounter++;
+            currentQuestion = pool.get(0);
 
-        // 5. Setup the current question
-        questionCounter++;
-        currentQuestion = pool.get(0);
+            difficultyLabel.setText("Question #" + questionCounter + " of " + userLimit + " | Level: " + targetLevel);
+            questionArea.setText(currentQuestion.questionText);
 
-        // 6. Update the UI Labels
-        difficultyLabel.setText("Question #" + questionCounter + " | Level: " + targetLevel);
-        updateDifficultyLabelColor(targetLevel);
-
-        // 7. Populate Question and Buttons
-        questionArea.setText(currentQuestion.questionText);
-
-        QuizOptionButton[] buttons = {btnA, btnB, btnC, btnD};
-        for (int i = 0; i < buttons.length; i++) {
-            buttons[i].setEnabled(true);
-            if (currentQuestion.options.size() > i) {
-                buttons[i].setText(currentQuestion.options.get(i));
+            // Safe TTS execution
+            if (tts != null) {
+                tts.speak("Question " + questionCounter + ". " + currentQuestion.questionText);
             }
-        }
 
-        // 8. Handle Timer
-        if (userSelectedTime > 0) {
-            startNewTimer();
-        } else {
-            timerLabel.setText("Timer: Off");
+            QuizOptionButton[] buttons = {btnA, btnB, btnC, btnD};
+            for (int i = 0; i < buttons.length; i++) {
+                buttons[i].setEnabled(true);
+                if (currentQuestion.options.size() > i) {
+                    buttons[i].setText(currentQuestion.options.get(i));
+                } else {
+                    buttons[i].setText("N/A");
+                }
+            }
+
+            if (userSelectedTime > 0) startNewTimer();
+            else timerLabel.setText("Timer: Off");
+
+        } catch (Exception ex) {
+            System.err.println("UI Loading Error: " + ex.getMessage());
+            difficultyLabel.setText("UI Error loading question: " + ex.getMessage());
         }
     }
 
@@ -1895,7 +2210,6 @@ public class OfflineTutorApp extends JFrame {
     }
 
     private List<QuizItem> findFirstAvailablePool(String preferredLevel) {
-        // Priority order for searching if the preferred one is empty
         String[] levels = {"EXPERT", "HARD", "MEDIUM-HARD", "MEDIUM", "EASY-MEDIUM", "EASY"};
         for (String lvl : levels) {
             List<QuizItem> p = getPoolByLevel(lvl);
@@ -1904,104 +2218,312 @@ public class OfflineTutorApp extends JFrame {
         return null;
     }
 
-    private void updateDifficultyLabelColor(String level) {
-        switch (level) {
-            case "EXPERT":      difficultyLabel.setForeground(new Color(155, 89, 182)); break; // Purple
-            case "HARD":        difficultyLabel.setForeground(new Color(231, 76, 60));  break; // Red
-            case "MEDIUM-HARD": difficultyLabel.setForeground(new Color(230, 126, 34)); break; // Orange
-            case "MEDIUM":      difficultyLabel.setForeground(new Color(241, 196, 15)); break; // Yellow
-            case "EASY-MEDIUM": difficultyLabel.setForeground(new Color(171, 235, 198)); break; // Light Green
-            case "EASY":        difficultyLabel.setForeground(new Color(46, 204, 113));  break; // Green
-        }
-    }
-
     private void finishQuiz() {
-        questionArea.setText("\n\n   🎉 QUESTIONS ARE OVER! 🎉\n\n   You have completed all valid questions from this page.\n   Please scan a new page or exit.");
+        questionArea.setText("\n\n    QUESTIONS ARE OVER! \n\n   You have completed all valid questions from this page.\n   Please scan a new page or exit.");
         difficultyLabel.setText("Session Complete");
         btnA.setEnabled(false); btnB.setEnabled(false); btnC.setEnabled(false); btnD.setEnabled(false);
         btnA.setText("-"); btnB.setText("-"); btnC.setText("-"); btnD.setText("-");
         JOptionPane.showMessageDialog(this, "Great job! You've finished this section.");
     }
 
-    // --- LOGIC: SCANNING ---
     private void performScan() {
-        // 1. Capture current settings
-        selectedSubject = (String) subjectDropdown.getSelectedItem();
-        currentBannedTopics = SUBJECT_BAN_LISTS.get(selectedSubject);
+        SwingUtilities.invokeLater(() -> {
+            selectedSubject = (String) subjectDropdown.getSelectedItem();
+            currentBannedTopics = SUBJECT_BAN_LISTS.get(selectedSubject);
+            JFileChooser chooser = new JFileChooser();
+            chooser.setDialogTitle("Select Textbook (PDF or Images)");
+            chooser.setFileFilter(new FileNameExtensionFilter("Documents (PDF, JPG, PNG)", "pdf", "jpg", "png", "jpeg"));
 
-        if (userSelectedTime <= 0) {
-            // Optional default: userSelectedTime = 600; // 10 mins
-        }
+            if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+                File selectedFile = chooser.getSelectedFile();
+                logRecentFile(selectedFile.getName(), selectedSubject, targetTheoryCount + targetNumericalCount);
+                difficultyLabel.setText("Initializing Engine...");
+                questionCounter = 0;
+                currentQuestion = null;
 
-        // 2. File Chooser
-        JFileChooser chooser = new JFileChooser();
-        chooser.setFileFilter(new FileNameExtensionFilter("Documents (PDF, JPG, PNG)", "pdf", "jpg", "png", "jpeg"));
+                new Thread(() -> {
+                    try {
+                        SwingUtilities.invokeLater(() -> difficultyLabel.setText("Reading Document..."));
+                        StringBuilder extractedText = new StringBuilder();
+                        String fileName = selectedFile.getName().toLowerCase();
 
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            File selectedFile = chooser.getSelectedFile();
-            difficultyLabel.setText("Initializing Engine...");
-            questionCounter = 0;
-            currentQuestion = null; // Important: Clear previous question state
+                        if (fileName.endsWith(".pdf")) {
+                            extractedText.append(processPDF(selectedFile));
+                        } else {
+                            displayImage(selectedFile);
+                            File cleanFile = cleanImage(selectedFile);
+                            Tesseract tesseract = new Tesseract();
+                            tesseract.setDatapath("tessdata");
+                            extractedText.append(tesseract.doOCR(cleanFile));
+                        }
 
-            new Thread(() -> {
-                try {
-                    // --- STEP 1: OCR / PDF EXTRACTION ---
-                    SwingUtilities.invokeLater(() -> difficultyLabel.setText("Reading Document..."));
-                    StringBuilder extractedText = new StringBuilder();
-                    String fileName = selectedFile.getName().toLowerCase();
+                        SwingUtilities.invokeLater(() -> difficultyLabel.setText("AI is generating questions..."));
 
-                    if (fileName.endsWith(".pdf")) {
-                        extractedText.append(processPDF(selectedFile));
-                    } else {
-                        displayImage(selectedFile);
-                        File cleanFile = cleanImage(selectedFile);
-                        Tesseract tesseract = new Tesseract();
-                        tesseract.setDatapath("tessdata");
-                        extractedText.append(tesseract.doOCR(cleanFile));
+                        // CRITICAL FIX: Aggressively limit context to prevent LLM memory overflow
+                        String documentContext = extractedText.toString();
+                        if (documentContext.length() > 3500) {
+                            documentContext = documentContext.substring(0, 3500);
+                        }
+
+                        // Block safely until the AI finishes generating
+                        generateMCQ(documentContext);
+
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                        SwingUtilities.invokeLater(() -> difficultyLabel.setText("Scan Error: " + ex.getMessage()));
                     }
-
-                    // --- STEP 2: PARALLEL AI GENERATION ---
-                    // We update the UI to let the user know the AI is now "Thinking"
-                    SwingUtilities.invokeLater(() -> difficultyLabel.setText("AI is generating first questions..."));
-
-                    // This call now triggers multiple background threads (Parallel Batching)
-                    generateMCQ(extractedText.toString());
-
-                    // Note: We don't put the 'loadNextQuestion' here anymore because
-                    // generateMCQ's internal threads will call it the moment they finish!
-
-                    SwingUtilities.invokeLater(() -> {
-                        // Sync the visual clock to user's choice
-                        clockTimer.setSeconds(userSelectedTime);
-                    });
-
-                } catch (Exception ex) {
-                    ex.printStackTrace();
-                    SwingUtilities.invokeLater(() -> difficultyLabel.setText("Scan Error: " + ex.getMessage()));
-                }
-            }).start();
-        }
+                }).start();
+            }
+        });
     }
 
-    private void playZenMusic() {
+    private void generateMCQ(String rawText) throws Exception {
+        // 1. Clear all buffers to prevent cross-session contamination
+        easyQuestions.clear();
+        easyMediumQuestions.clear();
+        mediumQuestions.clear();
+        mediumHardQuestions.clear();
+        hardQuestions.clear();
+        expertQuestions.clear();
+
+        SwingUtilities.invokeLater(() -> getGlassPane().setVisible(true));
+
         new Thread(() -> {
             try {
-                // Ensure you have a .wav file in your project folder
-                File musicPath = new File("assets/lofi_beats.wav");
-                if (!musicPath.exists()) {
-                    System.out.println("Music file not found at: " + musicPath.getAbsolutePath());
-                    return;
+                // 2. Calculate totals
+                int theoryTotal = (int) (targetTheoryCount * 1.6);
+                int numericalTotal = (int) (targetNumericalCount * 1.6);
+
+                // 3. Use LangChain Service to generate structured data
+                // We pass the context and the counts; LangChain handles the JSON mapping
+                List<QuizItemDTO> generatedItems = new ArrayList<>();
+
+                if (theoryTotal > 0) {
+                    generatedItems.addAll(tutorAssistant.generateQuestions(rawText, theoryTotal));
+                }
+                if (numericalTotal > 0) {
+                    // You could add a specific flag or separate method for numericals in your interface
+                    generatedItems.addAll(tutorAssistant.generateQuestions("NUMERICAL FOCUS: " + rawText, numericalTotal));
                 }
 
-                AudioInputStream audioInput = AudioSystem.getAudioInputStream(musicPath);
-                zenClip = AudioSystem.getClip();
-                zenClip.open(audioInput);
-                zenClip.loop(Clip.LOOP_CONTINUOUSLY); // Continuous play
-                zenClip.start();
-            } catch (Exception ex) {
-                ex.printStackTrace();
+                // 4. Route items to your existing buffers using your internal logic
+                for (QuizItemDTO dto : generatedItems) {
+                    // Convert DTO to your existing QuizItem class
+                    // We ensure labels (A, B, C, D) are applied here if not done by AI
+                    QuizItem item = finalizeAndRouteItem(dto);
+
+                    String diff = dto.difficulty.toUpperCase();
+                    if (diff.contains("EXPERT")) expertQuestions.add(item);
+                    else if (diff.contains("HARD")) hardQuestions.add(item);
+                    else if (diff.contains("MEDIUM")) mediumQuestions.add(item);
+                    else easyQuestions.add(item);
+                }
+
+                // 5. Start the Quiz on UI Thread
+                SwingUtilities.invokeLater(() -> {
+                    getGlassPane().setVisible(false);
+                    if (isAllPoolsEmpty()) {
+                        difficultyLabel.setText("AI Error: Could not generate valid questions.");
+                    } else {
+                        btnConfigQuiz.setVisible(false);
+                        btnScan.setVisible(false);
+                        countLabel.setVisible(false);
+                        questionCountSpinner.setVisible(false);
+                        clockTimer.setEditable(false);
+
+                        masteryContainer.setVisible(true);
+                        studentHistory.clear();
+                        updateAI(0);
+                        loadNextQuestion(currentLevel);
+                    }
+                });
+
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    getGlassPane().setVisible(false);
+                    if (e.getMessage() != null && e.getMessage().contains("Connection refused")) {
+                        difficultyLabel.setText("System Offline: Please start Ollama.");
+                        JOptionPane.showMessageDialog(this,
+                                "Cannot connect to the local AI engine (Ollama).\nCheck port 11434.",
+                                "Engine Offline", JOptionPane.ERROR_MESSAGE);
+                    } else {
+                        difficultyLabel.setText("AI Error: " + e.getMessage());
+                    }
+                });
             }
         }).start();
+    }
+
+    private QuizItem finalizeAndRouteItem(QuizItemDTO dto) {
+        // Shuffle and format labels A, B, C, D if your DTO doesn't already do it
+        List<String> labeledOptions = new ArrayList<>();
+        char label = 'A';
+        for (String opt : dto.options) {
+            labeledOptions.add(label + ". " + opt);
+            label++;
+        }
+
+        // Find which label matches the correct answer
+        String finalLabeledAnswer = labeledOptions.get(0);
+        for (String labeled : labeledOptions) {
+            if (labeled.contains(dto.correctAnswer)) finalLabeledAnswer = labeled;
+        }
+
+        return new QuizItem(dto.question, dto.question, finalLabeledAnswer, labeledOptions, dto.difficulty);
+    }
+
+
+
+    // This replaces your manual Regex parsing logic
+    public class QuizItemDTO {
+        @Description("The clear and concise question text")
+        public String question;
+
+        @Description("Exactly 4 multiple choice options")
+        public List<String> options;
+
+        @Description("The correct answer from the options list")
+        public String correctAnswer;
+
+        @Description("Difficulty: EASY, MEDIUM, or HARD")
+        public String difficulty;
+    }
+
+    interface TutorAssistant {
+        @dev.langchain4j.service.SystemMessage("You are an adaptive AI tutor. Create structured questions based on the provided text.")
+        List<QuizItemDTO> generateQuestions(@dev.langchain4j.service.UserMessage String context, int count);
+    }
+
+    private void startTeacherWorkflow(String title, int eCount, int mCount, int hCount) {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Select Source Textbook");
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+
+        File selectedFile = chooser.getSelectedFile();
+        logRecentFile(selectedFile.getName(), "Teacher Export", eCount + mCount + hCount);
+        JDialog progressDialog = new JDialog(this, "PaLO - Generating Quiz", true);
+        JLabel statusMsg = new JLabel("Extracting text from document...", SwingConstants.CENTER);
+        statusMsg.setBorder(BorderFactory.createEmptyBorder(20,20,20,20));
+        progressDialog.add(statusMsg);
+        progressDialog.setSize(400, 150);
+        progressDialog.setLocationRelativeTo(this);
+
+        new Thread(() -> {
+            try {
+                String extractedText = processPDF(selectedFile);
+                SwingUtilities.invokeLater(() -> statusMsg.setText("AI is generating questions (this may take a minute)..."));
+                List<QuizItem> exportList = new ArrayList<>();
+
+                if (eCount > 0) fetchForExport(extractedText, "EASY", eCount, exportList);
+                if (mCount > 0) fetchForExport(extractedText, "MEDIUM", mCount, exportList);
+                if (hCount > 0) fetchForExport(extractedText, "HARD", hCount, exportList);
+
+                if (exportList.isEmpty()) throw new Exception("AI failed to generate valid XML. Check local Ollama console.");
+
+                SwingUtilities.invokeLater(() -> statusMsg.setText("Creating PDF..."));
+                String savePath = generatePDF(exportList, title);
+
+                SwingUtilities.invokeLater(() -> {
+                    progressDialog.dispose();
+                    JOptionPane.showMessageDialog(this,
+                            "Successfully created PDF!\nSaved at: " + savePath,
+                            "Generation Complete", JOptionPane.INFORMATION_MESSAGE);
+                });
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                SwingUtilities.invokeLater(() -> {
+                    progressDialog.dispose();
+                    JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage(), "Generation Failed", JOptionPane.ERROR_MESSAGE);
+                });
+            }
+        }).start();
+        progressDialog.setVisible(true);
+    }
+
+    private String generatePDF(List<QuizItem> items, String title) throws Exception {
+        String userHome = System.getProperty("user.home");
+        File dir = new File(userHome, "Documents/PaLO_Quizzes");
+        if (!dir.exists()) dir.mkdirs();
+        File pdfFile = new File(dir, title.replaceAll("[^a-zA-Z0-9]", "_") + ".pdf");
+        try (org.apache.pdfbox.pdmodel.PDDocument doc = new org.apache.pdfbox.pdmodel.PDDocument()) {
+            org.apache.pdfbox.pdmodel.PDPage page = new org.apache.pdfbox.pdmodel.PDPage();
+            doc.addPage(page);
+
+            final float margin = 50;
+            final float startY = 750;
+            float y = startY;
+            String currentDiff = "";
+            int questionNumber = 1;
+
+            org.apache.pdfbox.pdmodel.PDPageContentStream content = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page);
+            content.beginText();
+            content.setFont(org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA_BOLD, 18);
+            content.newLineAtOffset(margin, y);
+            content.showText(title.toUpperCase());
+            content.endText();
+            y -= 40;
+
+            for (QuizItem item : items) {
+                if (!item.originalContext.equals(currentDiff)) {
+                    currentDiff = item.originalContext;
+                    questionNumber = 1;
+                    y -= 15;
+                    if (y < 100) {
+                        content.close();
+                        page = new org.apache.pdfbox.pdmodel.PDPage();
+                        doc.addPage(page);
+                        content = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page);
+                        y = startY;
+                    }
+                    content.beginText();
+                    content.setFont(org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA_BOLD, 14);
+                    content.newLineAtOffset(margin, y);
+                    content.showText("SECTION: " + currentDiff + " QUESTIONS");
+                    content.endText();
+                    y -= 25;
+                }
+
+                if (y < 120) {
+                    content.close();
+                    page = new org.apache.pdfbox.pdmodel.PDPage();
+                    doc.addPage(page);
+                    content = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page);
+                    y = startY;
+                }
+
+                content.beginText();
+                content.setFont(org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA_BOLD, 11);
+                content.newLineAtOffset(margin, y);
+                String fullQuestionText = questionNumber + ". " + item.questionText;
+
+                if (fullQuestionText.length() > 95) {
+                    content.showText(fullQuestionText.substring(0, 90));
+                    y -= 15;
+                    content.endText();
+                    content.beginText();
+                    content.newLineAtOffset(margin + 15, y);
+                    content.showText(fullQuestionText.substring(90));
+                } else {
+                    content.showText(fullQuestionText);
+                }
+                content.endText();
+                y -= 18;
+
+                content.setFont(org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA, 10);
+                for (String opt : item.options) {
+                    content.beginText();
+                    content.newLineAtOffset(margin + 20, y);
+                    content.showText(opt);
+                    content.endText();
+                    y -= 14;
+                }
+                y -= 12;
+                questionNumber++;
+            }
+            content.close();
+            doc.save(pdfFile);
+        }
+        return pdfFile.getAbsolutePath();
     }
 
     private void stopZenMusic() {
@@ -2011,43 +2533,244 @@ public class OfflineTutorApp extends JFrame {
         }
     }
 
-    private void showSessionSummary() {
-        int totalQuestions = studentHistory.size();
-        if (totalQuestions == 0) {
-            JOptionPane.showMessageDialog(this, "No questions answered this session.");
-            return;
+    // --- SECOND PASS VALIDATOR ---
+    //private boolean verifyQuestionWithAI(String context, String question, String correctAnswer) {
+    //    try {
+    //        String validationPrompt = "TEXT EXCERPT:\n" + context + "\n\n" +
+    //                "QUESTION: " + question + "\n" +
+    //                "PROVIDED ANSWER: " + correctAnswer + "\n\n" +
+    //                "TASK: Verify if the PROVIDED ANSWER is 100% factually correct based ONLY on the TEXT EXCERPT. " +
+    //                "If it is correct, reply with exactly 'VALID'. If it is incorrect, makes false assumptions, or is not in the text, reply with exactly 'INVALID'.";
+
+    //        String validationResponse = llamaConnection.generateMCQs(context, validationPrompt, 1, false).toUpperCase();
+    //       return validationResponse.contains("VALID") && !validationResponse.contains("INVALID");
+    //    } catch (Exception e) {
+    //        System.err.println("Validation check failed. Defaulting to false. " + e.getMessage());
+    //        return false;
+    //    }
+    //}
+
+    // --- 1. THE ADAPTIVE STUDENT ENGINE (Using weighted distribution) ---
+    private void fetchAndRouteQuestions(String context, int[] distribution, boolean isNumerical) throws Exception {
+        int totalCount = distribution[0] + distribution[1] + distribution[2] + distribution[3];
+        if (totalCount == 0) return;
+
+        String promptType = isNumerical ? "NUMERICAL calculation-based" : "THEORETICAL conceptual";
+        String distString = String.format("- %d EASY\n- %d MEDIUM\n- %d HARD\n- %d EXPERT",
+                distribution[0], distribution[1], distribution[2], distribution[3]);
+
+        String prompt;
+        if (isNumerical) {
+            prompt = "TEXT EXCERPT:\n" + context + "\n\n" +
+                    "TASK: Create exactly " + totalCount + " math problems based on the text.\n" +
+                    "STRICT RULES:\n" +
+                    "1. Provide a Question.\n" +
+                    "2. Provide EXACTLY 4 comma-separated options.\n" +
+                    "3. Provide the Correct Answer.\n" +
+                    "FORMAT EXACTLY LIKE THIS:\n" +
+                    "**Question**: What is 2 + 2?\n" +
+                    "**Options**: 3, 4, 5, 6\n" +
+                    "**Correct Answer**: 4\n";
+        } else {
+            prompt = "TEXT EXCERPT:\n" + context + "\n\n" +
+                    "TASK: Create exactly " + totalCount + " " + promptType + " multiple-choice questions.\n" +
+                    "REQUIRED DISTRIBUTION:\n" + distString + "\n\n" +
+                    "STRICT RULES:\n" +
+                    "1. YOU MUST USE THE EXACT XML TAGS PROVIDED IN THE EXAMPLE.\n" +
+                    "2. YOU MUST PROVIDE EXACTLY 3 <distractor> TAGS PER QUESTION. DO NOT SKIP THEM.\n" +
+                    "EXAMPLE FORMAT:\n" +
+                    "<item>\n" +
+                    "<difficulty>EASY</difficulty>\n" +
+                    "<question>What law governs the reflection of light?</question>\n" +
+                    "<correct_answer>The angle of incidence equals the angle of reflection</correct_answer>\n" +
+                    "<distractor>Light bends around the object</distractor>\n" +
+                    "<distractor>The speed of light decreases</distractor>\n" +
+                    "<distractor>Light gets absorbed completely</distractor>\n" +
+                    "</item>";
         }
 
-        long correctCount = studentHistory.stream().filter(s -> s == 1.0f).count();
-        double accuracy = (double) correctCount / totalQuestions * 100;
+        executeRegexExtraction(prompt, context, totalCount, isNumerical, true, "");
+    }
 
-        // Create a Panel for the Report
-        JPanel reportPanel = new JPanel(new BorderLayout(10, 10));
-        reportPanel.setPreferredSize(new Dimension(600, 400));
+    // --- 2. THE TEACHER EXPORT ENGINE (Fixes the 4-argument IDE error) ---
+    private void fetchForExport(String context, String diff, int count, List<QuizItem> masterList) throws Exception {
+        masterList.addAll(fetchQuestionsForExport(context, diff, count, false));
+    }
 
-        // Header: Score and Accuracy
-        JLabel scoreLabel = new JLabel(String.format(
-                "<html><div style='text-align: center;'><h2>Session Results</h2>" +
-                        "<b>Score:</b> %d / %d<br>" +
-                        "<b>Accuracy:</b> %.1f%%</div></html>",
-                correctCount, totalQuestions, accuracy), SwingConstants.CENTER);
-        reportPanel.add(scoreLabel, BorderLayout.NORTH);
+    // --- 2. THE TEACHER EXPORT ENGINE ---
+    private List<QuizItem> fetchQuestionsForExport(String context, String diff, int count, boolean isNumerical) throws Exception {
+        String promptType = isNumerical ? "NUMERICAL calculation-based" : "THEORETICAL conceptual";
 
-        // Body: Detailed Table of Errors
-        String[] columnNames = {"Question Snapshot", "Your Answer", "Correct Answer"};
-        java.util.List<QuizItem> allQuestions = new ArrayList<>();
-        allQuestions.addAll(easyQuestions); // This needs to be tracked in a 'master list' instead
-        // Note: Since you remove items from pools, you should keep a 'sessionHistory' list of QuizItems
+        String prompt;
+        if (isNumerical) {
+            prompt = "TEXT EXCERPT:\n" + context + "\n\n" +
+                    "TASK: Create exactly " + count + " math problems based on the text.\n" +
+                    "DIFFICULTY LEVEL: " + diff + "\n" +
+                    "STRICT RULES:\n" +
+                    "1. Provide a Question.\n" +
+                    "2. Provide EXACTLY 4 comma-separated options.\n" +
+                    "3. Provide the Correct Answer.\n" +
+                    "FORMAT EXACTLY LIKE THIS:\n" +
+                    "**Question**: What is 2 + 2?\n" +
+                    "**Options**: 3, 4, 5, 6\n" +
+                    "**Correct Answer**: 4\n";
+        } else {
+            prompt = "TEXT EXCERPT:\n" + context + "\n\n" +
+                    "TASK: Create exactly " + count + " " + promptType + " multiple-choice questions.\n" +
+                    "DIFFICULTY LEVEL: " + diff + "\n\n" +
+                    "STRICT RULES:\n" +
+                    "1. YOU MUST USE THE EXACT XML TAGS PROVIDED IN THE EXAMPLE.\n" +
+                    "2. YOU MUST PROVIDE EXACTLY 3 <distractor> TAGS PER QUESTION. DO NOT SKIP THEM.\n" +
+                    "EXAMPLE FORMAT:\n" +
+                    "<item>\n" +
+                    "<question>What law governs the reflection of light?</question>\n" +
+                    "<correct_answer>The angle of incidence equals the angle of reflection</correct_answer>\n" +
+                    "<distractor>Light bends around the object</distractor>\n" +
+                    "<distractor>The speed of light decreases</distractor>\n" +
+                    "<distractor>Light gets absorbed completely</distractor>\n" +
+                    "</item>";
+        }
 
-        // For this example, let's assume you've added answered items to a list called 'sessionLog'
-        DefaultTableModel model = new DefaultTableModel(columnNames, 0);
-        // Loop through your logged questions and add rows where user was wrong
+        return executeRegexExtraction(prompt, context, count, isNumerical, false, diff);
+    }
 
-        JTable table = new JTable(model);
-        table.setFillsViewportHeight(true);
-        reportPanel.add(new JScrollPane(table), BorderLayout.CENTER);
+    // --- 3. THE CORE REGEX PARSER ---
+    private List<QuizItem> executeRegexExtraction(String prompt, String context, int count, boolean isNumerical, boolean autoRoute, String forcedDiff) throws Exception {
+        int maxRetries = 2;
+        List<QuizItem> items = new ArrayList<>();
 
-        JOptionPane.showMessageDialog(this, reportPanel, "Performance Report", JOptionPane.PLAIN_MESSAGE);
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                String currentPrompt = attempt > 1 ? "WARNING: PREVIOUS FORMAT FAILED. USE EXACT FORMAT REQUESTED.\n\n" + prompt : prompt;
+                String rawResponse = llamaConnection.generateMCQs("", currentPrompt, count, isNumerical);
+
+                System.out.println("--- AI RAW RESPONSE (ATTEMPT " + attempt + ") ---");
+                System.out.println(rawResponse);
+
+                if (isNumerical) {
+                    // --- MATH MODEL PARSER (Markdown format) ---
+                    // Looks for blocks formatted like:
+                    // **Question**: ...
+                    // **Options**: a, b, c, d
+                    // **Correct Answer**: ...
+                    Pattern qPattern = Pattern.compile("\\*\\*Question\\*\\*\\s*:(.*?)(?=\\*\\*Options|$)", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+                    Pattern optPattern = Pattern.compile("\\*\\*Options?\\*\\*\\s*:(.*?)(?=\\*\\*Correct Answer|$)", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+                    Pattern ansPattern = Pattern.compile("\\*\\*Correct Answer\\*\\*\\s*:(.*?)(?=\\*\\*Question|$)", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+
+                    Matcher qMatcher = qPattern.matcher(rawResponse);
+                    Matcher optMatcher = optPattern.matcher(rawResponse);
+                    Matcher ansMatcher = ansPattern.matcher(rawResponse);
+
+                    while (qMatcher.find() && optMatcher.find() && ansMatcher.find()) {
+                        String question = qMatcher.group(1).trim();
+                        String rawCorrect = ansMatcher.group(1).trim();
+                        String optionsStr = optMatcher.group(1).trim();
+
+                        // Clean up markdown bolding if AI added it to the answer
+                        rawCorrect = rawCorrect.replace("**", "").trim();
+
+                        // Split options by comma
+                        String[] splitOptions = optionsStr.split(",");
+                        List<String> rawOptions = new ArrayList<>();
+                        for (String opt : splitOptions) {
+                            rawOptions.add(opt.trim().replace("**", ""));
+                        }
+
+                        if (question.isEmpty() || rawCorrect.isEmpty() || rawOptions.isEmpty()) continue;
+
+                        finalizeAndRouteItem(question, rawCorrect, rawOptions, items, autoRoute, forcedDiff);
+                    }
+                } else {
+                    // --- THEORY MODEL PARSER (XML format) ---
+                    Pattern itemPattern = Pattern.compile("<item>(.*?)</item>", Pattern.DOTALL);
+                    Pattern diffPattern = Pattern.compile("<difficulty>(.*?)</difficulty>", Pattern.DOTALL);
+                    Pattern qPattern = Pattern.compile("<question>(.*?)</question>", Pattern.DOTALL);
+                    Pattern correctPattern = Pattern.compile("<correct_answer>(.*?)</correct_answer>", Pattern.DOTALL);
+                    Pattern distractorPattern = Pattern.compile("<distractor>(.*?)</distractor>", Pattern.DOTALL);
+
+                    Matcher itemMatcher = itemPattern.matcher(rawResponse);
+
+                    while (itemMatcher.find()) {
+                        String itemBlock = itemMatcher.group(1);
+
+                        Matcher dMatcher = diffPattern.matcher(itemBlock);
+                        String itemDiff = autoRoute ? (dMatcher.find() ? dMatcher.group(1).trim().toUpperCase() : "EASY") : forcedDiff;
+
+                        Matcher qMatcher = qPattern.matcher(itemBlock);
+                        String question = qMatcher.find() ? qMatcher.group(1).trim() : "";
+
+                        Matcher cMatcher = correctPattern.matcher(itemBlock);
+                        String rawCorrect = cMatcher.find() ? cMatcher.group(1).trim() : "";
+
+                        List<String> rawOptions = new ArrayList<>();
+                        if (!rawCorrect.isEmpty()) {
+                            rawOptions.add(rawCorrect.replaceFirst("^[A-Da-d][\\.\\)]\\s*", ""));
+                        }
+
+                        Matcher distMatcher = distractorPattern.matcher(itemBlock);
+                        while (distMatcher.find()) {
+                            rawOptions.add(distMatcher.group(1).trim().replaceFirst("^[A-Da-d][\\.\\)]\\s*", ""));
+                        }
+
+                        if (question.isEmpty() || rawCorrect.isEmpty() || rawOptions.size() < 2) continue;
+                        finalizeAndRouteItem(question, rawCorrect, rawOptions, items, autoRoute, itemDiff);
+                    }
+                }
+
+                if (!items.isEmpty()) return items;
+
+            } catch (Exception e) {
+                System.err.println("Extraction Attempt " + attempt + " failed: " + e.getMessage());
+            }
+        }
+        throw new Exception("AI Logic/Parsing Failed. Check IDE console.");
+    }
+
+    // Helper method to avoid duplicating the A/B/C/D formatting logic
+    private void finalizeAndRouteItem(String question, String rawCorrect, List<String> rawOptions, List<QuizItem> items, boolean autoRoute, String itemDiff) {
+        // SMART PADDING: Replaces missing options with realistic test options
+        if (rawOptions.size() == 2) {
+            rawOptions.add("Both A and B");
+            rawOptions.add("None of the above");
+        } else if (rawOptions.size() == 3) {
+            rawOptions.add("None of the above");
+        }
+        if(rawOptions.size() > 4) rawOptions = rawOptions.subList(0, 4);
+
+        // Ensure the correct answer is actually in the options list (safety net for math mode)
+        if (!rawOptions.contains(rawCorrect)) {
+            rawOptions.set(0, rawCorrect);
+        }
+
+        // Shuffle the options so the correct answer isn't always in the same spot
+        Collections.shuffle(rawOptions);
+
+        List<String> labeledOptions = new ArrayList<>();
+        String finalLabeledAnswer = "";
+        char label = 'A';
+
+        for (String optText : rawOptions) {
+            String fullOpt = label + ". " + optText;
+            labeledOptions.add(fullOpt);
+            // Match to find which labeled option is the correct one
+            if (optText.equals(rawCorrect.replaceFirst("^[A-Da-d][\\.\\)]\\s*", ""))) {
+                finalLabeledAnswer = fullOpt;
+            }
+            label++;
+        }
+
+        if (finalLabeledAnswer.isEmpty()) finalLabeledAnswer = labeledOptions.get(0);
+
+        QuizItem newItem = new QuizItem(question, question, finalLabeledAnswer, labeledOptions, itemDiff);
+        items.add(newItem);
+
+        // Route to internal buffers if playing the adaptive quiz
+        if (autoRoute) {
+            if (itemDiff.contains("EXPERT")) expertQuestions.add(newItem);
+            else if (itemDiff.contains("HARD")) hardQuestions.add(newItem);
+            else if (itemDiff.contains("MEDIUM")) mediumQuestions.add(newItem);
+            else easyQuestions.add(newItem);
+        }
     }
 
     private String processPDF(File pdfFile) throws Exception {
@@ -2060,19 +2783,15 @@ public class OfflineTutorApp extends JFrame {
             for (int i = 0; i < document.getNumberOfPages(); i++) {
                 final int pageNum = i + 1;
                 SwingUtilities.invokeLater(() -> difficultyLabel.setText("Scanning Page " + pageNum + "..."));
-
-                // 1. Try to extract digital text
                 org.apache.pdfbox.text.PDFTextStripper stripper = new org.apache.pdfbox.text.PDFTextStripper();
                 stripper.setStartPage(pageNum);
                 stripper.setEndPage(pageNum);
                 String text = stripper.getText(document);
 
-                // 2. If the page is a scan (empty text), use OCR
                 if (text.trim().isEmpty()) {
-                    BufferedImage bim = pdfRenderer.renderImageWithDPI(i, 300); // 300 DPI for OCR accuracy
+                    BufferedImage bim = pdfRenderer.renderImageWithDPI(i, 300);
                     text = tesseract.doOCR(bim);
                 }
-
                 pdfText.append(text).append("\n");
             }
         }
@@ -2103,250 +2822,28 @@ public class OfflineTutorApp extends JFrame {
         } catch (Exception e) { return source; }
     }
 
-    // --- GENERATION WITH PLURAL FILTER ---
-    // --- SMART GENERATION: DEFINITION & CONCEPT DETECTION ---
-    private void generateMCQ(String rawText) throws Exception {
-        // 1. Clear previous session data
-        easyQuestions.clear();
-        easyMediumQuestions.clear();
-        mediumQuestions.clear();
-        mediumHardQuestions.clear();
-        hardQuestions.clear();
-        expertQuestions.clear();
-        askedQuestionIDs.clear();
-
-        // 2. Prepare text
-        String text = cleanGarbage(rawText);
-        if (text.length() > 2500) {
-            text = text.substring(0, 2500) + "...";
-        }
-        final String contextText = text;
-
-        // --- THREAD 1: FAST TRACK (EASY & MEDIUM) ---
-        // Goal: Get the quiz started ASAP
-        new Thread(() -> {
-            try {
-                String prompt = "Generate exactly 3 MCQs from this text. Difficulty: EASY or MEDIUM. " +
-                        "Return ONLY a JSON array: [{\"question\":\"\", \"options\":[], \"correctAnswer\":\"\", \"difficulty\":\"\"}]";
-
-                fetchAndPopulate(contextText, prompt);
-
-                // If this is the first batch back, start the quiz immediately
-                SwingUtilities.invokeLater(() -> {
-                    if (currentQuestion == null && !easyQuestions.isEmpty()) {
-                        loadNextQuestion("EASY");
-                    }
-                });
-            } catch (Exception e) {
-                System.err.println("Fast Track Gen Error: " + e.getMessage());
-            }
-        }).start();
-
-        // --- THREAD 2: DEEP TRACK (HARD & EXPERT) ---
-        // Goal: Populate the later stages of the quiz in the background
-        new Thread(() -> {
-            try {
-                String prompt = "Generate exactly 3 deep-thinking MCQs. Difficulty: HARD or EXPERT. " +
-                        "Return ONLY a JSON array with: question, options, correctAnswer, difficulty.";
-
-                fetchAndPopulate(contextText, prompt);
-
-                SwingUtilities.invokeLater(() -> {
-                    updateStatus("AI Engine: All difficulty tiers loaded.");
-                });
-            } catch (Exception e) {
-                System.err.println("Deep Track Gen Error: " + e.getMessage());
-            }
-        }).start();
-    }
-
-    private void fetchAndPopulate(String text, String customPrompt) throws Exception {
-        // 1. Capture the exact count the user wants from the UI spinner
-        int totalTarget = (int) questionCountSpinner.getValue();
-
-        // 2. Parallel Load Balancing: Each thread generates half the total
-        // We use a ceiling or Math.max to ensure we don't request 0 questions
-        int batchSize = (totalTarget / 2) + (totalTarget % 2);
-        if (batchSize < 1) batchSize = 1;
-
-        // 3. Requesting JSON from local Ollama instance
-        // Passing the batchSize ensures the AI knows when to stop
-        String jsonResponse = llamaConnection.generateMCQs(text, customPrompt, batchSize);
-
-        // 4. Robust Parsing
-        JsonArray questionsArray = JsonParser.parseString(jsonResponse).getAsJsonArray();
-
-        for (int i = 0; i < questionsArray.size(); i++) {
-            JsonObject qObj = questionsArray.get(i).getAsJsonObject();
-
-            String question = qObj.get("question").getAsString();
-            String correctAnswer = qObj.get("correctAnswer").getAsString();
-            String difficulty = qObj.get("difficulty").getAsString().toUpperCase();
-
-            List<String> options = new ArrayList<>();
-            JsonArray optsArray = qObj.get("options").getAsJsonArray();
-            for (int j = 0; j < optsArray.size(); j++) {
-                options.add(optsArray.get(j).getAsString());
-            }
-
-            // Create the QuizItem with the dynamic data
-            QuizItem item = new QuizItem(question, question, correctAnswer, options, text);
-
-            // 5. Thread-Safe Pool Management
-            // Essential because FastGen and DeepGen threads finish at unpredictable times
-            synchronized(askedQuestionIDs) {
-                if (!askedQuestionIDs.contains(item.id)) {
-                    if (difficulty.contains("EXPERT")) expertQuestions.add(item);
-                    else if (difficulty.contains("HARD")) hardQuestions.add(item);
-                    else if (difficulty.contains("MEDIUM-HARD")) mediumHardQuestions.add(item);
-                    else if (difficulty.contains("MEDIUM")) mediumQuestions.add(item);
-                    else if (difficulty.contains("EASY-MEDIUM")) easyMediumQuestions.add(item);
-                    else easyQuestions.add(item);
-
-                    askedQuestionIDs.add(item.id);
-                }
-            }
-        }
-
-        // UI Update: Notify the user that a batch is ready
-        SwingUtilities.invokeLater(() -> {
-            updateStatus("Batch sync complete. Pools updated.");
-        });
-    }
-
-    // Fallback method using the old rule-based approach
-    private void generateMCQFallback(String text) throws Exception {
-        TokenizerModel tokenModel = new TokenizerModel(new FileInputStream("en-token.bin"));
-        Tokenizer tokenizer = new TokenizerME(tokenModel);
-        POSModel posModel = new POSModel(new FileInputStream("en-pos-maxent.bin"));
-        POSTaggerME tagger = new POSTaggerME(posModel);
-
-        String[] sentences = text.split("(?<=[.?!])\\s+");
-
-        // PHASE 1: Identify Key Concepts (Nouns with frequency)
-        Map<String, Integer> wordFrequency = new HashMap<>();
-        for (String sentence : sentences) {
-            if (!isSentenceLogical(sentence)) continue;
-
-            String[] words = tokenizer.tokenize(sentence);
-            String[] tags = tagger.tag(words);
-            for (int i = 0; i < words.length; i++) {
-                String w = words[i].toLowerCase();
-                if (w.length() < 6 || currentBannedTopics.contains(w)) continue;
-
-                if (tags[i].startsWith("NN")) {
-                    wordFrequency.put(words[i], wordFrequency.getOrDefault(words[i], 0) + 1);
-                }
-            }
-        }
-        List<String> validTopics = new ArrayList<>(wordFrequency.keySet());
-
-        // PHASE 2: Generate Questions based on Smart Strategies
-        for (int i = 0; i < sentences.length; i++) {
-            String sentence = sentences[i].trim();
-            if (!isSentenceLogical(sentence)) continue;
-
-            boolean isMeta = false;
-            for (String meta : META_PHRASES) if (sentence.toLowerCase().contains(meta)) isMeta = true;
-            if (isMeta) continue;
-
-            String qText = null;
-            String answer = null;
-
-            // STRATEGY A: Definition Detection
-            if (sentence.contains(" is called ") || sentence.contains(" is known as ") || sentence.contains(" is defined as ")) {
-                for (String topic : validTopics) {
-                    if (sentence.contains(topic) && sentence.indexOf(topic) > sentence.indexOf(" is ")) {
-                        answer = topic;
-                        String definitionPart = sentence.substring(0, sentence.indexOf(" is "));
-                        qText = "What concept is described by the following definition?\n\n\"" + definitionPart + "...\"";
-                        break;
-                    }
-                }
-            }
-
-            // STRATEGY B: Contextual identification
-            if (qText == null) {
-                for (String topic : validTopics) {
-                    if (sentence.contains(topic)) {
-                        answer = topic;
-                        qText = "Based on the text, what key concept is being discussed in this sentence?\n\n" +
-                                "\"" + sentence + "\"";
-
-                        if (sentence.matches("^(This|It|These|That).*") && i > 0) {
-                            qText = "Context: " + sentences[i-1] + "\n\n" + qText;
-                        }
-                        break;
-                    }
-                }
-            }
-
-            // PHASE 3: Assign to one of 6 Difficulty Tiers
-            if (qText != null && answer != null) {
-                List<String> options = new ArrayList<>();
-                options.add(answer);
-
-                Collections.shuffle(validTopics);
-                for (String dist : validTopics) {
-                    if (options.size() < 4 && !dist.equalsIgnoreCase(answer)) {
-                        options.add(dist);
-                    }
-                }
-                while (options.size() < 4) options.add("General Concept");
-                Collections.shuffle(options);
-
-                QuizItem item = new QuizItem(qText, sentence, answer, options, sentence);
-                if (!askedQuestionIDs.contains(item.id)) {
-                    String lowerS = sentence.toLowerCase();
-                    String lowerQ = qText.toLowerCase();
-
-                    if (lowerQ.contains("described by") && lowerS.contains("defined as")) {
-                        expertQuestions.add(item); // Really Hard
-                    } else if (lowerQ.contains("described by")) {
-                        hardQuestions.add(item);   // Hard
-                    } else if (lowerS.contains(" because ") || lowerS.contains(" therefore ")) {
-                        mediumHardQuestions.add(item);
-                    } else if (sentence.length() > 120) {
-                        mediumQuestions.add(item);
-                    } else if (sentence.length() > 80) {
-                        easyMediumQuestions.add(item);
-                    } else {
-                        easyQuestions.add(item);
-                    }
-                }
-            }
-        }
-    }
-
     private String cleanGarbage(String text) {
-        // Removes things like "18-Jun-21", "2:27:39 PM", "indd", "Reprint 2025-26"
-        String cleaned = text.replaceAll("(?i)\\b\\d{1,2}-[a-z]{3}-\\d{2,4}\\b", ""); // Dates
-        cleaned = cleaned.replaceAll("(?i)\\b\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:AM|PM)?\\b", ""); // Time
-        cleaned = cleaned.replaceAll("(?i)\\b(?:chapter|indd|reprint|page|edition|version)\\b", ""); // Metadata words
-        cleaned = cleaned.replaceAll("\\d{4}-\\d{2,4}", ""); // Year ranges
+        String cleaned = text.replaceAll("(?i)\\b\\d{1,2}-[a-z]{3}-\\d{2,4}\\b", "");
+        cleaned = cleaned.replaceAll("(?i)\\b\\d{1,2}:\\d{2}(?::\\d{2})?\\s*(?:AM|PM)?\\b", "");
+        cleaned = cleaned.replaceAll("(?i)\\b(?:chapter|indd|reprint|page|edition|version)\\b", "");
+        cleaned = cleaned.replaceAll("\\d{4}-\\d{2,4}", "");
         return cleaned.trim();
-    }
-
-    private boolean isSentenceLogical(String sentence) {
-        // A logical educational sentence should be long enough and not just numbers/symbols
-        if (sentence.length() < 45) return false;
-
-        long digitCount = sentence.chars().filter(Character::isDigit).count();
-        // If more than 15% of the sentence is numbers, it's likely a page header/footer
-        if ((double) digitCount / sentence.length() > 0.15) return false;
-
-        // Must contain common 'teaching' verbs to be a good question candidate
-        String lower = sentence.toLowerCase();
-        return lower.contains(" is ") || lower.contains(" are ") ||
-                lower.contains(" refers ") || lower.contains(" means ") || lower.contains(" used ");
     }
 
     private void saveProgress() {
         try {
+            FileWriter writer = new FileWriter("tutor_save.txt");
+            // Save 1: Theme
+            writer.write(currentThemeName + "\n");
+
+            // Save 2: History
             StringBuilder sb = new StringBuilder();
             for (Float score : studentHistory) sb.append(score).append(",");
-            FileWriter writer = new FileWriter("tutor_save.txt");
-            writer.write(sb.toString());
+            writer.write(sb.toString() + "\n");
+
+            // Save 3: Username
+            writer.write((customUserName != null ? customUserName : "") + "\n");
+
             writer.close();
         } catch (Exception e) {}
     }
@@ -2356,88 +2853,43 @@ public class OfflineTutorApp extends JFrame {
             File saveFile = new File("tutor_save.txt");
             if (!saveFile.exists()) return;
             Scanner scanner = new Scanner(saveFile);
-            if (scanner.hasNext()) {
-                String[] scores = scanner.next().split(",");
+
+            // 1. Restore Theme
+            if (scanner.hasNextLine()) {
+                String savedTheme = scanner.nextLine().trim();
+                if (PRESETS.containsKey(savedTheme)) {
+                    currentThemeName = savedTheme;
+                    ThemePreset tp = PRESETS.get(savedTheme);
+                    sidebarColor = tp.side; windowColor = tp.main; currentAccentColor = tp.accent;
+                }
+            }
+            // 2. Restore History
+            if (scanner.hasNextLine()) {
+                String[] scores = scanner.nextLine().split(",");
                 studentHistory.clear();
                 for (String s : scores) if (!s.isEmpty()) studentHistory.add(Float.parseFloat(s));
                 updateAI(0);
+            }
+            // 3. Restore Username
+            if (scanner.hasNextLine()) {
+                customUserName = scanner.nextLine().trim();
             }
             scanner.close();
         } catch (Exception e) {}
     }
 
-    private void customizeOptionButtons(JButton btnA, JButton btnB, JButton btnC, JButton btnD) {
-        // 1. Define the specific colors for each option
-        Color colorA = new Color(255, 45, 85);   // Red
-        Color colorB = new Color(52, 152, 219);  // Blue
-        Color colorC = new Color(46, 204, 113);  // Green
-        Color colorD = new Color(255, 200, 0);   // Gold
+    // ================== FIXED DASHBOARD (Flexible Mastery + Safe Drawing) ==================
+    private class ThemePill extends JButton {
+        private String themeName;
+        private ThemePreset preset;
+        private JDialog parent;
 
-        // 2. Apply styling only (Keyboard registration removed)
-        applyOptionStyle(btnA, colorA, "A");
-        applyOptionStyle(btnB, colorB, "B");
-        applyOptionStyle(btnC, colorC, "C");
-        applyOptionStyle(btnD, colorD, "D");
-    }
-
-    private void applyOptionStyle(JButton btn, Color themeColor, String label) {
-        // Basic Properties
-        btn.setText("<html><font size='5'><b>" + label + "</b></font></html>");
-        btn.setForeground(Color.WHITE);
-        btn.setContentAreaFilled(false);
-        btn.setFocusPainted(false);
-        btn.setOpaque(false); // Ensure it's transparent by default
-        btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-
-        // Force the specific theme color border
-        btn.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(themeColor, 2, true),
-                BorderFactory.createEmptyBorder(12, 25, 12, 25)
-        ));
-
-        // Remove any existing MouseListeners to prevent "Blue" color leftovers
-        for (java.awt.event.MouseListener ml : btn.getMouseListeners()) {
-            btn.removeMouseListener(ml);
-        }
-
-        // Add New Hover Logic using the correct theme color
-        btn.addMouseListener(new java.awt.event.MouseAdapter() {
-            public void mouseEntered(java.awt.event.MouseEvent e) {
-                // Fill background with theme color (Low opacity)
-                btn.setBackground(new Color(themeColor.getRed(), themeColor.getGreen(), themeColor.getBlue(), 60));
-                btn.setOpaque(true);
-                btn.repaint();
-            }
-            public void mouseExited(java.awt.event.MouseEvent e) {
-                btn.setOpaque(false);
-                btn.repaint();
-            }
-        });
-    }
-
-    class ModernMenuButton extends JButton {
-        private Color accent;
-        private float alpha = 0.2f;
-
-        public ModernMenuButton(String html, Color c) {
-            super("<html><center>" + html + "</center></html>");
-            this.accent = c;
-            setForeground(Color.WHITE);
-            setFont(new Font("Segoe UI Semibold", Font.PLAIN, 16));
-            setContentAreaFilled(false);
-            setFocusPainted(false);
-            setCursor(new Cursor(Cursor.HAND_CURSOR));
-            setBorder(BorderFactory.createLineBorder(new Color(255, 255, 255, 40)));
-
-            addMouseListener(new java.awt.event.MouseAdapter() {
-                public void mouseEntered(java.awt.event.MouseEvent e) {
-                    alpha = 0.7f; // Glow effect on hover
-                    repaint();
-                }
-                public void mouseExited(java.awt.event.MouseEvent e) {
-                    alpha = 0.2f; // Fade out
-                    repaint();
-                }
+        public ThemePill(String name, ThemePreset preset, JDialog parent) {
+            this.themeName = name; this.preset = preset; this.parent = parent;
+            setContentAreaFilled(false); setBorderPainted(false); setCursor(new Cursor(Cursor.HAND_CURSOR));
+            addActionListener(e -> {
+                applyThemePreset(themeName);
+                parent.getContentPane().setBackground(windowColor);
             });
         }
 
@@ -2446,486 +2898,752 @@ public class OfflineTutorApp extends JFrame {
             Graphics2D g2 = (Graphics2D) g.create();
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-            // CHANGE: Instead of using 'this.accent', we use 'currentAccentColor'
-            // We only use the accent if it's NOT a themed button,
-            // but for your minimalist look, use the global one:
-            Color drawColor = getModel().isRollover() ? currentAccentColor : new Color(255, 255, 255, 40);
+            if (currentThemeName.equals(themeName)) {
+                g2.setColor(preset.accent);
+                g2.setStroke(new BasicStroke(3f));
+                g2.drawRoundRect(2, 2, getWidth() - 5, getHeight() - 5, 25, 25);
+            }
 
-            g2.setColor(drawColor);
-            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
+            int splitWidth = (int)(getWidth() * 0.3);
+            g2.setColor(preset.side); g2.fillRoundRect(5, 5, splitWidth, getHeight() - 10, 15, 15);
+            g2.setColor(preset.main); g2.fillRoundRect(splitWidth + 2, 5, (getWidth() - splitWidth) - 10, getHeight() - 10, 15, 15);
 
-            super.paintComponent(g);
+            g2.setColor(preset.isDark ? Color.WHITE : Color.BLACK);
+            g2.setFont(new Font("Segoe UI Bold", Font.PLAIN, 12));
+            g2.drawString(themeName, splitWidth + 20, getHeight() / 2 + 5);
             g2.dispose();
         }
     }
 
-    class ProgressGraphPanel extends JPanel {
-        private List<Float> scores;
-        private double animationProgress = 0.0; // 0.0 to 1.0
-        private Timer animTimer;
-
-        public ProgressGraphPanel() {
-            List<Float> history = studentHistory;
-            if (history.size() > 10) {
-                this.scores = history.subList(history.size() - 10, history.size());
-            } else {
-                this.scores = history;
-            }
-            setOpaque(false);
-            setPreferredSize(new Dimension(450, 280));
-        }
-
-        public void startAnimation() {
-            animationProgress = 0.0;
-            if (animTimer != null && animTimer.isRunning()) animTimer.stop();
-
-            // 20ms delay + 0.01 increment = ~2 seconds to complete the draw
-            animTimer = new Timer(20, e -> {
-                animationProgress += 0.01;
-                if (animationProgress >= 1.0) {
-                    animationProgress = 1.0;
-                    ((Timer)e.getSource()).stop();
-                }
-                repaint();
-            });
-            animTimer.start();
-        }
-
-        @Override
-        protected void paintComponent(Graphics g) {
-            super.paintComponent(g);
-            Graphics2D g2 = (Graphics2D) g.create();
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
-            int marginLeft = 60, marginBottom = 50, marginRight = 20, marginTop = 20;
-            int graphWidth = getWidth() - marginLeft - marginRight;
-            int graphHeight = getHeight() - marginBottom - marginTop;
-
-            // 1. DRAW AXES
-            g2.setColor(Color.WHITE);
-            g2.setStroke(new BasicStroke(2.0f));
-            g2.drawLine(marginLeft, marginTop, marginLeft, marginTop + graphHeight);
-            g2.drawLine(marginLeft, marginTop + graphHeight, marginLeft + graphWidth, marginTop + graphHeight);
-
-            // 2. DRAW Y-AXIS LABELS
-            g2.setFont(new Font("Segoe UI", Font.BOLD, 12));
-            for (int i = 0; i <= 4; i++) {
-                int y = marginTop + graphHeight - (i * graphHeight / 4);
-                g2.setColor(new Color(255, 255, 255, 30));
-                g2.drawLine(marginLeft, y, marginLeft + graphWidth, y);
-                g2.setColor(Color.WHITE);
-                g2.drawString((i * 25) + "%", marginLeft - 45, y + 5);
-            }
-
-            if (scores == null || scores.size() < 2) {
-                drawEmptyState(g2, getWidth(), getHeight());
-                g2.dispose();
-                return;
-            }
-
-            // 3. PLOT COORDINATES
-            double xScale = (double) graphWidth / (scores.size() - 1);
-            List<Point> graphPoints = new ArrayList<>();
-            for (int i = 0; i < scores.size(); i++) {
-                int x1 = (int) (i * xScale + marginLeft);
-                int y1 = (int) (marginTop + graphHeight - (scores.get(i) * graphHeight));
-                graphPoints.add(new Point(x1, y1));
-            }
-
-            // 4. ANIMATED LINE CLIPPING
-            // We set a clip area that expands from left to right based on animationProgress
-            Shape oldClip = g2.getClip();
-            int clipWidth = (int) (getWidth() * animationProgress);
-            g2.setClip(0, 0, clipWidth, getHeight());
-
-            // Draw Gradient & Neon Line within clip
-            drawGradientArea(g2, graphPoints, marginTop + graphHeight);
-            g2.setStroke(new BasicStroke(3.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            g2.setColor(currentAccentColor);
-            for (int i = 0; i < graphPoints.size() - 1; i++) {
-                g2.drawLine(graphPoints.get(i).x, graphPoints.get(i).y,
-                        graphPoints.get(i + 1).x, graphPoints.get(i + 1).y);
-            }
-
-            // 5. DATA NODES
-            for (Point p : graphPoints) {
-                // Dots only appear if the animation has passed their X position
-                if (p.x <= clipWidth) {
-                    g2.setColor(Color.WHITE);
-                    g2.fillOval(p.x - 4, p.y - 4, 8, 8);
-                    g2.setColor(currentAccentColor);
-                    g2.setStroke(new BasicStroke(1.5f));
-                    g2.drawOval(p.x - 4, p.y - 4, 8, 8);
-                }
-            }
-
-            g2.setClip(oldClip); // Restore clip to draw labels
-
-            // 6. X-AXIS LABELS
-            g2.setColor(new Color(200, 200, 200));
-            g2.setFont(new Font("Segoe UI Bold", Font.PLAIN, 10));
-            g2.drawString("PREVIOUS", marginLeft, marginTop + graphHeight + 30);
-            g2.drawString("LATEST", marginLeft + graphWidth - 40, marginTop + graphHeight + 30);
-
-            g2.dispose();
-        }
-
-        private void drawGradientArea(Graphics2D g2, List<Point> points, int baselineY) {
-            Path2D path = new Path2D.Double();
-            path.moveTo(points.get(0).x, points.get(0).y);
-            for (Point p : points) path.lineTo(p.x, p.y);
-            path.lineTo(points.get(points.size() - 1).x, baselineY);
-            path.lineTo(points.get(0).x, baselineY);
-            path.closePath();
-
-            GradientPaint gp = new GradientPaint(0, 0,
-                    new Color(currentAccentColor.getRed(), currentAccentColor.getGreen(), currentAccentColor.getBlue(), 50),
-                    0, baselineY, new Color(currentAccentColor.getRed(), currentAccentColor.getGreen(), currentAccentColor.getBlue(), 0));
-            g2.setPaint(gp);
-            g2.fill(path);
-        }
-
-        private void drawEmptyState(Graphics2D g2, int w, int h) {
-            g2.setColor(new Color(255, 255, 255, 80));
-            g2.setFont(new Font("Segoe UI", Font.ITALIC, 13));
-            String msg = "Collecting data points...";
-            FontMetrics fm = g2.getFontMetrics();
-            g2.drawString(msg, (w - fm.stringWidth(msg)) / 2 + 30, h / 2);
-        }
-    }
-
-    // --- UNIFIED & CORRECTED DASHBOARD CLASS ---
     private class PaLOHomePage extends JDialog {
-        private JPanel topBar;
-        private JPanel centerArea;
-        private JPanel bottomBar;
+        private JLabel dynamicDisplayLabel;
+        private int displayStep = 0;
+        private java.util.List<SidebarItem> sidebarButtons = new java.util.ArrayList<>();
+        private JLabel welcome;
+        private JButton themeBtn;
+        private JLabel dashboardTitle;
+
+        private final JPanel mainLayout;
+        private final JPanel sidebar;
+        private final JPanel contentPanel;
+        private final DailyLineGraphPanel graphPanel;
+        private final ModernCalendar calendarPanel;
+        private JTable table;
+        private DefaultTableModel recentFilesModel;
+        private List<JsonObject> currentlyDisplayedFiles = new ArrayList<>();
 
         public PaLOHomePage(Frame owner) {
-            // Set modality to false to prevent blocking initialization threads
-            // that keep the taskbar icon alive.
             super(owner, false);
             setUndecorated(false);
             setTitle("PaLO - Student Dashboard");
-            setSize(1200, 750);
+            setSize(1280, 800);
             setLocationRelativeTo(null);
-
             setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+
+            OfflineTutorApp mainAppRef = (OfflineTutorApp) owner;
+            mainAppRef.setMostRecentDashboard(this);
+
             addWindowListener(new java.awt.event.WindowAdapter() {
-                @Override
                 public void windowClosing(java.awt.event.WindowEvent e) {
-                    if (getOwner() != null) {
-                        if (questionCounter > 0) {
-                            closeAndSwitch(); // Ensure we snap back if closed manually
-                        } else {
-                            int response = JOptionPane.showConfirmDialog(null,
-                                    "Exit PaLO entirely?", "Confirm Exit", JOptionPane.YES_NO_OPTION);
-                            if (response == JOptionPane.YES_OPTION) System.exit(0);
+                    if (getOwner() != null && questionCounter > 0) closeAndSwitch();
+                    else {
+                        if (JOptionPane.showConfirmDialog(null, "Exit PaLO entirely?", "Confirm", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
+                            saveProgress(); System.exit(0);
                         }
                     }
                 }
             });
 
-            BackgroundPanel bgPanel = new BackgroundPanel("homepage_bg.gif");
-            bgPanel.setLayout(new BorderLayout());
+            mainLayout = new JPanel(new BorderLayout());
+            mainLayout.setBackground(OfflineTutorApp.this.windowColor);
 
-            // --- TOPBAR ---
-            topBar = new JPanel(new BorderLayout());
-            topBar.setOpaque(false);
-            topBar.setBorder(BorderFactory.createEmptyBorder(30, 60, 0, 60));
+            sidebar = new JPanel();
+            sidebar.setLayout(new BoxLayout(sidebar, BoxLayout.Y_AXIS));
+            sidebar.setBackground(OfflineTutorApp.this.sidebarColor);
+            sidebar.setPreferredSize(new Dimension(260, 0));
+            sidebar.setBorder(BorderFactory.createEmptyBorder(40, 20, 40, 20));
 
-            JLabel welcome = new JLabel("<html><font color='#BBBBBB' size='5'>WELCOME BACK,</font><br>" +
-                    "<font size='14' color='white'><b>THUSHAR</b></font></html>");
+            dashboardTitle = new JLabel();
+            updateDashboardTitleText();
+            dashboardTitle.setAlignmentX(Component.LEFT_ALIGNMENT);
+            sidebar.add(dashboardTitle);
+            sidebar.add(Box.createRigidArea(new Dimension(0, 30)));
 
-            JPanel topTrailingArea = new JPanel();
-            topTrailingArea.setLayout(new BoxLayout(topTrailingArea, BoxLayout.Y_AXIS));
-            topTrailingArea.setOpaque(false);
-            topTrailingArea.add(createLiveClock());
-            topTrailingArea.add(Box.createRigidArea(new Dimension(0, 25)));
-            topTrailingArea.add(createBigQuitButton());
-            topBar.add(welcome, BorderLayout.WEST);
-            topBar.add(topTrailingArea, BorderLayout.EAST);
-
-            // --- CENTER AREA (Analytics) ---
-            centerArea = new JPanel(new GridBagLayout());
-            centerArea.setOpaque(false);
-            GridBagConstraints gbc = new GridBagConstraints();
-
-            GlassCardPanel analyticalCard = new GlassCardPanel();
-            analyticalCard.setLayout(new BoxLayout(analyticalCard, BoxLayout.Y_AXIS));
-
-            ProgressGraphPanel graph = new ProgressGraphPanel();
-            JLabel analysisLabel = new JLabel("<html><body style='width: 350px; text-align: center;'>" +
-                    calculateTrend() + "</body></html>");
-            analysisLabel.setFont(new Font("Segoe UI Light", Font.PLAIN, 15));
-            analysisLabel.setForeground(Color.WHITE);
-            analysisLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
-
-            analyticalCard.add(createLegend());
-            analyticalCard.add(graph);
-            analyticalCard.add(Box.createRigidArea(new Dimension(0, 15)));
-            analyticalCard.add(analysisLabel);
-
-            gbc.gridx = 1; gbc.weightx = 1.0;
-            gbc.anchor = GridBagConstraints.CENTER;
-            centerArea.add(analyticalCard, gbc);
-
-            // --- BOTTOMBAR (Direct Navigation) ---
-            bottomBar = new JPanel(new BorderLayout());
-            bottomBar.setOpaque(false);
-            bottomBar.setBorder(BorderFactory.createEmptyBorder(0, 60, 60, 60));
-
-            JPanel utilityGroup = new JPanel(new FlowLayout(FlowLayout.LEFT, 20, 0));
-            utilityGroup.setOpaque(false);
-            utilityGroup.add(createGlowButton("SETTINGS", new Color(255, 200, 0), e -> openSettings()));
-            utilityGroup.add(createGlowButton("DEEP FOCUS", new Color(155, 89, 182), e -> launchDeepFocusMode()));
-
-            JPanel studyGroup = new JPanel(new FlowLayout(FlowLayout.RIGHT, 20, 0));
-            studyGroup.setOpaque(false);
-
-            studyGroup.add(createGlowButton("TALK TO AI", new Color(155, 89, 182), e -> {
-                isChatMode = true; isAudioMode = false;
-                closeAndSwitch();
-            }));
-
-            studyGroup.add(createGlowButton("AUDIO MODE", new Color(52, 152, 219), e -> {
-                isChatMode = false; isAudioMode = true;
-                closeAndSwitch();
-            }));
-
-            studyGroup.add(createGlowButton("OFFLINE STUDY", new Color(46, 204, 113), e -> {
-                isChatMode = false; isAudioMode = false;
-                closeAndSwitch();
-            }));
-
-            bottomBar.add(utilityGroup, BorderLayout.WEST);
-            bottomBar.add(studyGroup, BorderLayout.EAST);
-
-            bgPanel.add(topBar, BorderLayout.NORTH);
-            bgPanel.add(centerArea, BorderLayout.CENTER);
-            bgPanel.add(bottomBar, BorderLayout.SOUTH);
-
-            setContentPane(bgPanel);
-            SwingUtilities.invokeLater(graph::startAnimation);
-        }
-
-        /**
-         * Replaces animateAndTransition.
-         * Handles instant mode switching and window restoration.
-         */
-        private void closeAndSwitch() {
-            OfflineTutorApp mainApp = (OfflineTutorApp)getOwner();
-            if (mainApp != null) {
-                // 1. CONFIGURE THE CORRECT CARD
-                // Switches the main view to Quiz, Chat, or Audio mode
-                if (isChatMode) {
-                    mainApp.switchToChatMode();
-                } else if (isAudioMode) {
-                    mainApp.switchToAudioMode();
-                } else {
-                    mainApp.switchToQuizMode();
+            addSidebarBtn(sidebar, "Home", true, e -> { });
+            addSidebarBtn(sidebar, "Offline Scan Mode", false, e -> { isChatMode=false; isAudioMode=false; closeAndSwitch(); });
+            addSidebarBtn(sidebar, "Deep Focus Mode", false, e -> {
+                if (mainAppRef != null) {
+                    mainAppRef.switchToFocusMode();
+                    mainAppRef.setLocationRelativeTo(null);
+                    mainAppRef.setVisible(true);
                 }
-
-                // 2. SNAP BACK TO CENTER
-                // IMPORTANT: We removed setOpacity(1.0f) here because it crashes decorated frames.
-                // This method moves the window from its off-screen parking spot (-4000)
-                // back to the center of your monitor.
-                mainApp.setLocationRelativeTo(null);
-
-                // 3. BRING TO FOCUS
-                mainApp.setVisible(true);
-                mainApp.toFront();
-                mainApp.requestFocus();
-
-                // 4. REFRESH UI
-                mainApp.revalidate();
-                mainApp.repaint();
-            }
-
-            // 5. CLOSE DASHBOARD
-            this.dispose();
-        }
-
-        private void launchDeepFocusMode() {
-            JDialog focusDialog = new JDialog(this, true);
-            focusDialog.setUndecorated(true);
-            Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
-            focusDialog.setBounds(0, 0, screen.width, screen.height);
-
-            BackgroundPanel focusBG = new BackgroundPanel("assets/focus_bg.jpg");
-            focusBG.setLayout(new GridBagLayout());
-            GridBagConstraints gbc = new GridBagConstraints();
-            gbc.insets = new Insets(15, 15, 15, 15);
-
-            JLabel title = new JLabel("SELECT YOUR FOCUS PATH");
-            title.setFont(new Font("Segoe UI Black", Font.BOLD, 36));
-            title.setForeground(Color.WHITE);
-            gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 2;
-            focusBG.add(title, gbc);
-
-            gbc.gridwidth = 1;
-
-            JButton pBtn = createTechniqueButton("POMODORO", "25m Work • 5m Rest", new Color(255, 45, 85));
-            pBtn.addActionListener(e -> startFocusSession(focusDialog, 25, 5));
-            gbc.gridy = 1; gbc.gridx = 0; focusBG.add(pBtn, gbc);
-
-            JButton fBtn = createTechniqueButton("FLOW STATE", "90m Deep Work • 15m Rest", new Color(0, 220, 255));
-            fBtn.addActionListener(e -> startFocusSession(focusDialog, 90, 15));
-            gbc.gridx = 1; focusBG.add(fBtn, gbc);
-
-            JButton rBtn = createTechniqueButton("52 / 17 RULE", "Science-backed Productivity", new Color(46, 204, 113));
-            rBtn.addActionListener(e -> startFocusSession(focusDialog, 52, 17));
-            gbc.gridy = 2; gbc.gridx = 0; focusBG.add(rBtn, gbc);
-
-            JButton cBtn = createTechniqueButton("CUSTOM ZEN", "Set your own intervals", new Color(255, 200, 0));
-            cBtn.addActionListener(e -> {
-                String work = JOptionPane.showInputDialog("Work Minutes:");
-                String rest = JOptionPane.showInputDialog("Rest Minutes:");
-                try {
-                    startFocusSession(focusDialog, Integer.parseInt(work), Integer.parseInt(rest));
-                } catch(Exception ex) {}
+                this.dispose();
             });
-            gbc.gridx = 1; focusBG.add(cBtn, gbc);
+            addSidebarBtn(sidebar, "Talk to AI", false, e -> { isChatMode=true; isAudioMode=false; closeAndSwitch(); });
+            addSidebarBtn(sidebar, "Quiz Generator", false, e -> {
+                TeacherQuizConfigDialog dialog = new TeacherQuizConfigDialog((Frame)getOwner());
+                dialog.setVisible(true);
+            });
+            addSidebarBtn(sidebar, "FlashCard Generator", false, e -> startFlashcardWorkflow());
 
-            JButton back = new JButton("BACK TO MENU");
-            back.setForeground(Color.GRAY);
-            back.setContentAreaFilled(false);
-            back.addActionListener(e -> focusDialog.dispose());
-            gbc.gridy = 3; gbc.gridx = 0; gbc.gridwidth = 2;
-            focusBG.add(back, gbc);
+            sidebar.add(Box.createVerticalGlue());
 
-            focusDialog.add(focusBG);
-            focusDialog.setVisible(true);
+            JButton settingsBtn = createSimpleLinkBtn("Settings");
+            settingsBtn.addActionListener(e -> openSettings());
+            sidebar.add(settingsBtn);
+            sidebar.add(Box.createRigidArea(new Dimension(0, 15)));
+
+            JButton exitBtn = createSimpleLinkBtn("Exit Application");
+            exitBtn.addActionListener(e -> { saveProgress(); System.exit(0); });
+            sidebar.add(exitBtn);
+
+            contentPanel = new JPanel(new BorderLayout(25, 25));
+            contentPanel.setBackground(OfflineTutorApp.this.windowColor);
+            contentPanel.setBorder(BorderFactory.createEmptyBorder(30, 30, 30, 30));
+
+            JPanel topBar = new JPanel(new BorderLayout());
+            topBar.setOpaque(false);
+
+            java.util.Calendar c = java.util.Calendar.getInstance();
+            int h = c.get(java.util.Calendar.HOUR_OF_DAY);
+            final String greeting = (h < 12) ? "Good Morning" : ((h < 17) ? "Good Afternoon" : "Good Evening");
+
+            welcome = new JLabel();
+            updateWelcomeText(greeting);
+            topBar.add(welcome, BorderLayout.WEST);
+
+            JPanel topRight = new JPanel(new FlowLayout(FlowLayout.RIGHT, 20, 0));
+            topRight.setOpaque(false);
+
+            JButton eyeBtn = new JButton("\uD83D\uDC41");
+            eyeBtn.setFont(new Font("Segoe UI Symbol", Font.PLAIN, 22));
+            eyeBtn.setContentAreaFilled(false); eyeBtn.setBorderPainted(false); eyeBtn.setFocusPainted(false);
+            eyeBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            eyeBtn.setForeground(mainAppRef != null && mainAppRef.isSpeechEnabled() ? currentAccentColor : (isDarkMode() ? Color.WHITE : Color.BLACK));
+
+            eyeBtn.addActionListener(e -> {
+                if (mainAppRef != null) {
+                    mainAppRef.setSpeechEnabled(!mainAppRef.isSpeechEnabled());
+                    eyeBtn.setForeground(mainAppRef.isSpeechEnabled() ? currentAccentColor : (isDarkMode() ? Color.WHITE : Color.BLACK));
+                    if (mainAppRef.isSpeechEnabled()) mainAppRef.getTTS().speak("Voice assisted mode enabled");
+                }
+            });
+            topRight.add(eyeBtn);
+
+            dynamicDisplayLabel = new JLabel() {
+                protected void paintComponent(Graphics g) {
+                    setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                    super.paintComponent(g);
+                }
+            };
+            dynamicDisplayLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+            startDisplayTimer();
+            topRight.add(dynamicDisplayLabel);
+
+            themeBtn = new JButton() {
+                protected void paintComponent(Graphics g) {
+                    setText(isDarkMode() ? "\u2600" : "\uD83C\uDF19");
+                    setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                    super.paintComponent(g);
+                }
+            };
+            themeBtn.setFont(new Font("Segoe UI Symbol", Font.PLAIN, 22));
+            themeBtn.setContentAreaFilled(false); themeBtn.setBorderPainted(false); themeBtn.setFocusPainted(false);
+            themeBtn.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            themeBtn.addActionListener(e -> mainAppRef.applyThemePreset(PRESETS.get(currentThemeName).counterpart));
+            topRight.add(themeBtn);
+
+            topBar.add(topRight, BorderLayout.EAST);
+            contentPanel.add(topBar, BorderLayout.NORTH);
+
+            JPanel centerGrid = new JPanel(new GridBagLayout());
+            centerGrid.setOpaque(false);
+            GridBagConstraints gbc = new GridBagConstraints();
+
+            JPanel leftCol = new JPanel(new BorderLayout(0, 25));
+            leftCol.setOpaque(false);
+
+            GlassCardPanel graphCard = new GlassCardPanel();
+            graphCard.setLayout(new BorderLayout(15, 15));
+            graphCard.setPreferredSize(new Dimension(0, 320));
+            JLabel gTitle = new JLabel("Today's Performance") {
+                protected void paintComponent(Graphics g) {
+                    setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                    super.paintComponent(g);
+                }
+            };
+            gTitle.setFont(new Font("Segoe UI", Font.BOLD, 16));
+            graphCard.add(gTitle, BorderLayout.NORTH);
+            this.graphPanel = new DailyLineGraphPanel();
+            graphCard.add(graphPanel, BorderLayout.CENTER);
+            leftCol.add(graphCard, BorderLayout.CENTER);
+
+            GlassCardPanel tableCard = new GlassCardPanel();
+            tableCard.setLayout(new BorderLayout(10, 10));
+            tableCard.setPreferredSize(new Dimension(0, 180));
+            JLabel tTitle = new JLabel("Recently Used Files") {
+                protected void paintComponent(Graphics g) {
+                    setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                    super.paintComponent(g);
+                }
+            };
+            tTitle.setFont(new Font("Segoe UI", Font.BOLD, 14));
+            tableCard.add(tTitle, BorderLayout.NORTH);
+
+            String[] cols = {"Time", "File Name", "Subject"}; // Changed Date to Time
+            recentFilesModel = new DefaultTableModel(cols, 0) { public boolean isCellEditable(int r, int c) { return false; }};
+            table = new JTable(recentFilesModel) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    setBackground(isDarkMode() ? new Color(35, 35, 35) : Color.WHITE);
+                    setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                    getTableHeader().setBackground(isDarkMode() ? new Color(45, 45, 45) : new Color(240, 240, 240));
+                    getTableHeader().setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                    if (getParent() instanceof JViewport) getParent().setBackground(isDarkMode() ? new Color(35, 35, 35) : Color.WHITE);
+                    super.paintComponent(g);
+                }
+            };
+
+            // Allow row selection
+            table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+            table.getSelectionModel().addListSelectionListener(e -> {
+                if (!e.getValueIsAdjusting() && table.getSelectedRow() != -1) {
+                    int row = table.getSelectedRow();
+                    if (row < currentlyDisplayedFiles.size()) {
+                        JsonObject selectedObj = currentlyDisplayedFiles.get(row);
+                        List<Float> fileData = new ArrayList<>();
+                        if (selectedObj.has("history")) {
+                            JsonArray arr = selectedObj.getAsJsonArray("history");
+                            for (JsonElement el : arr) fileData.add(el.getAsFloat());
+                        }
+                        graphPanel.setPlotData(fileData);
+                    }
+                }
+            });
+
+            table.setRowHeight(28); table.setShowGrid(false);
+            // Add vertical scrollbar policy to ensure it is scrollable
+            JScrollPane tsp = new JScrollPane(table);
+            tsp.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+            tsp.setBorder(BorderFactory.createEmptyBorder());
+            tableCard.add(tsp, BorderLayout.CENTER);
+            leftCol.add(tableCard, BorderLayout.SOUTH);
+
+            // Make the dashboard default to showing only today's files
+            String todayStr = new java.text.SimpleDateFormat("dd MMM yyyy").format(new java.util.Date());
+            refreshRecentFilesTable(todayStr);
+
+            gbc.gridx=0; gbc.gridy=0; gbc.weightx=0.68; gbc.weighty=1.0;
+            gbc.fill=GridBagConstraints.BOTH; gbc.insets=new Insets(0,0,0,25);
+            centerGrid.add(leftCol, gbc);
+
+            JPanel rightCol = new JPanel(new GridBagLayout());
+            rightCol.setOpaque(false);
+            GridBagConstraints rc = new GridBagConstraints();
+
+            GlassCardPanel masteryCard = new GlassCardPanel();
+            masteryCard.setLayout(new BorderLayout());
+            JLabel mTitle = new JLabel("Overall Mastery", SwingConstants.CENTER) {
+                protected void paintComponent(Graphics g) {
+                    setForeground(isDarkMode() ? Color.GRAY : new Color(0, 0, 100));
+                    super.paintComponent(g);
+                }
+            };
+            masteryCard.add(mTitle, BorderLayout.NORTH);
+            homeCircleMastery.setPreferredSize(null);
+            masteryCard.add(homeCircleMastery, BorderLayout.CENTER);
+
+            rc.gridx = 0; rc.gridy = 0; rc.weightx = 1.0; rc.weighty = 1.0;
+            rc.fill = GridBagConstraints.BOTH; rc.insets = new Insets(0, 0, 25, 0);
+            rightCol.add(masteryCard, rc);
+
+            GlassCardPanel calCard = new GlassCardPanel();
+            calCard.setLayout(new BorderLayout());
+            calCard.setPreferredSize(new Dimension(0, 280));
+            this.calendarPanel = new ModernCalendar();
+            calCard.add(calendarPanel, BorderLayout.CENTER);
+
+            rc.gridy = 1; rc.weighty = 0.0; rc.insets = new Insets(0, 0, 0, 0);
+            rightCol.add(calCard, rc);
+
+            gbc.gridx = 1; gbc.weightx = 0.32;
+            centerGrid.add(rightCol, gbc);
+
+            contentPanel.add(centerGrid, BorderLayout.CENTER);
+            mainLayout.add(sidebar, BorderLayout.WEST);
+            mainLayout.add(contentPanel, BorderLayout.CENTER);
+            setContentPane(mainLayout);
         }
 
-        private String calculateTrend() {
-            if (studentHistory.size() < 2) return "Start your first session to see performance insights.";
+        public void refreshRecentFilesTable(String dateFilter) {
+            if (this.recentFilesModel == null) return;
+            this.recentFilesModel.setRowCount(0);
+            this.currentlyDisplayedFiles.clear();
 
-            float last = studentHistory.get(studentHistory.size() - 1);
-            float prev = studentHistory.get(studentHistory.size() - 2);
-            float diff = (last - prev) * 100;
+            for (JsonObject obj : OfflineTutorApp.this.recentFilesList) {
+                if (dateFilter == null || obj.get("date").getAsString().equals(dateFilter)) {
+                    currentlyDisplayedFiles.add(obj);
+                }
+            }
 
-            if (diff > 0) {
-                return "Your score increased by <font color='#2ecc71'>" + String.format("%.1f", diff) + "%</font>. Excellent growth!";
-            } else if (diff < 0) {
-                return "Your score dipped by <font color='#e74c3c'>" + String.format("%.1f", Math.abs(diff)) + "%</font>. Review previous topics.";
+            if (currentlyDisplayedFiles.isEmpty()) {
+                this.recentFilesModel.addRow(new Object[]{"-", "No activity", "-"});
+                graphPanel.setPlotData(new ArrayList<>()); // Clear graph
             } else {
-                return "Stability maintained. Aim for a 5% increase in your next session.";
+                for (JsonObject obj : currentlyDisplayedFiles) {
+                    String time = obj.has("time") ? obj.get("time").getAsString() : "-";
+                    this.recentFilesModel.addRow(new Object[]{time, obj.get("fileName").getAsString(), obj.get("subject").getAsString()});
+                }
+                // Auto-select the first file of the day
+                table.setRowSelectionInterval(0, 0);
             }
         }
 
-        private JLabel createLiveClock() {
-            JLabel label = new JLabel();
-            label.setFont(new Font("Segoe UI Semibold", Font.PLAIN, 22));
-            label.setForeground(Color.WHITE);
-            label.setAlignmentX(Component.RIGHT_ALIGNMENT);
-            new javax.swing.Timer(1000, e -> label.setText(new java.text.SimpleDateFormat("hh:mm:ss a").format(new java.util.Date()))).start();
-            return label;
+        public void refreshColorsDirectly() {
+            sidebar.setBackground(OfflineTutorApp.this.sidebarColor);
+            mainLayout.setBackground(OfflineTutorApp.this.windowColor);
+            contentPanel.setBackground(OfflineTutorApp.this.windowColor);
+            getContentPane().setBackground(OfflineTutorApp.this.windowColor);
+
+            updateDashboardTitleText();
+            updateWelcomeText(null);
+
+            for(SidebarItem btn : sidebarButtons) btn.updateLook();
+
+            if(graphPanel != null) graphPanel.repaint();
+            if(homeCircleMastery != null) homeCircleMastery.repaint();
+            if(calendarPanel != null) calendarPanel.repaint();
+            repaint();
         }
 
-        private JButton createBigQuitButton() {
-            JButton btn = new JButton("EXIT APPLICATION");
-            btn.setFont(new Font("Segoe UI", Font.BOLD, 12));
-            btn.setForeground(new Color(255, 255, 255, 150));
-            btn.setContentAreaFilled(false);
-            btn.setBorder(BorderFactory.createLineBorder(new Color(255, 255, 255, 50)));
-            btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-            btn.addActionListener(e -> System.exit(0));
-            return btn;
+        private void updateDashboardTitleText() {
+            String color = isDarkMode() ? "white" : "black";
+            dashboardTitle.setText("<html><div style='color:" + color + ";'>" +
+                    "<span style='font-size:22px; font-weight:bold;'>PaLO</span><br>" +
+                    "<span style='font-size:10px;'>Learning Orchestrator</span></div></html>");
         }
 
-        private JPanel createLegend() {
-            JPanel p = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-            p.setOpaque(false);
-            JLabel dot = new JLabel("● ");
-            dot.setForeground(currentAccentColor);
-            JLabel txt = new JLabel("Mastery Progress  ");
-            txt.setForeground(Color.WHITE);
-            p.add(dot); p.add(txt);
-            return p;
+        private void updateWelcomeText(String greeting) {
+            String colorStr = isDarkMode() ? "white" : "black";
+            String currentGreeting = (greeting != null) ? greeting :
+                    (welcome.getText().contains("Morning") ? "Good Morning" :
+                            welcome.getText().contains("Afternoon") ? "Good Afternoon" : "Good Evening");
+
+            // Decide which name to show
+            String displayTarget = OfflineTutorApp.this.customUserName;
+            if (displayTarget == null || displayTarget.isEmpty()) {
+                String rawName = System.getProperty("user.name");
+                displayTarget = (rawName != null && !rawName.isEmpty()) ?
+                        rawName.substring(0, 1).toUpperCase() + rawName.substring(1) : "Student";
+            }
+
+            welcome.setText("<html><font color='#888888'>" + currentGreeting + ",</font><br><font size='6' color='" + colorStr + "'><b>" + displayTarget + "</b></font></html>");
         }
 
-        private JButton createGlowButton(String text, Color glowColor, java.awt.event.ActionListener action) {
-            JButton btn = new JButton(text) {
+        private void openSettings() {
+            JDialog settings = new JDialog(this, "Appearance Settings", true);
+            settings.setSize(450, 750); // Made slightly taller for the new field
+            settings.setLocationRelativeTo(this);
+            settings.getContentPane().setBackground(OfflineTutorApp.this.windowColor);
+
+            JPanel content = new JPanel(new BorderLayout());
+            content.setOpaque(false);
+
+            JPanel mainGrid = new JPanel(new GridLayout(0, 1, 10, 12));
+            mainGrid.setOpaque(false);
+            mainGrid.setBorder(BorderFactory.createEmptyBorder(20, 30, 20, 30));
+
+            // --- 1. USERNAME SECTION ---
+            JLabel nameLabel = new JLabel("DISPLAY NAME", SwingConstants.CENTER) {
+                protected void paintComponent(Graphics g) {
+                    setForeground(isDarkMode() ? currentAccentColor : Color.BLACK);
+                    super.paintComponent(g);
+                }
+            };
+            nameLabel.setFont(new Font("Segoe UI Bold", Font.PLAIN, 14));
+            mainGrid.add(nameLabel);
+
+            // Pre-fill with custom name, or OS name if empty
+            String currentName = OfflineTutorApp.this.customUserName.isEmpty() ?
+                    System.getProperty("user.name") : OfflineTutorApp.this.customUserName;
+
+            JTextField nameField = new JTextField(currentName);
+            nameField.setHorizontalAlignment(JTextField.CENTER);
+            nameField.setFont(new Font("Segoe UI", Font.BOLD, 16));
+            nameField.setBackground(isDarkMode() ? new Color(45, 45, 45) : Color.WHITE);
+            nameField.setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+            nameField.setCaretColor(isDarkMode() ? Color.WHITE : Color.BLACK);
+            nameField.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(currentAccentColor, 1),
+                    BorderFactory.createEmptyBorder(5, 10, 5, 10)
+            ));
+            mainGrid.add(nameField);
+
+            // Spacer
+            mainGrid.add(Box.createRigidArea(new Dimension(0, 10)));
+
+            // --- 2. THEME SECTION ---
+            JLabel title = new JLabel("SELECT AESTHETIC PRESET", SwingConstants.CENTER) {
+                protected void paintComponent(Graphics g) {
+                    setForeground(isDarkMode() ? currentAccentColor : Color.BLACK);
+                    super.paintComponent(g);
+                }
+            };
+            title.setFont(new Font("Segoe UI Bold", Font.PLAIN, 14));
+            mainGrid.add(title);
+
+            String initialTheme = currentThemeName;
+            boolean appIsDark = isDarkMode();
+            for (String name : PRESETS.keySet()) {
+                if (PRESETS.get(name).isDark == appIsDark) mainGrid.add(new ThemePill(name, PRESETS.get(name), settings));
+            }
+
+            JPanel footer = new JPanel(new FlowLayout(FlowLayout.CENTER, 20, 15));
+            footer.setOpaque(false);
+
+            JButton btnApply = createPillActionBtn("APPLY CHANGES", new Color(46, 204, 113));
+            JButton btnCancel = createPillActionBtn("CANCEL", new Color(231, 76, 60));
+
+            btnApply.addActionListener(e -> {
+                // Save the new username
+                OfflineTutorApp.this.customUserName = nameField.getText().trim();
+                saveProgress();
+                updateWelcomeText(null); // Instantly update dashboard UI
+                settings.dispose();
+                repaint();
+            });
+            btnCancel.addActionListener(e -> {
+                ((OfflineTutorApp)getOwner()).applyThemePreset(initialTheme);
+                settings.dispose();
+                repaint();
+            });
+
+            footer.add(btnApply); footer.add(btnCancel);
+            content.add(mainGrid, BorderLayout.CENTER);
+            content.add(footer, BorderLayout.SOUTH);
+            settings.add(content);
+            settings.setVisible(true);
+        }
+
+        private JButton createPillActionBtn(String text, Color baseColor) {
+            JButton b = new JButton(text) {
                 @Override
                 protected void paintComponent(Graphics g) {
                     Graphics2D g2 = (Graphics2D) g.create();
                     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                    if (getModel().isRollover()) {
-                        g2.setColor(new Color(glowColor.getRed(), glowColor.getGreen(), glowColor.getBlue(), 80));
-                        g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
-                        g2.setStroke(new BasicStroke(2.5f));
-                        g2.setColor(glowColor);
-                    } else {
-                        g2.setStroke(new BasicStroke(1.5f));
-                        g2.setColor(new Color(255, 255, 255, 100));
-                    }
-                    g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 15, 15);
+                    g2.setColor(getModel().isRollover() ? baseColor.brighter() : baseColor);
+                    g2.fillRoundRect(0, 0, getWidth(), getHeight(), 40, 40);
+                    g2.setColor(Color.WHITE);
+                    g2.setFont(new Font("Segoe UI Bold", Font.PLAIN, 12));
+                    FontMetrics fm = g2.getFontMetrics();
+                    g2.drawString(text, (getWidth()-fm.stringWidth(text))/2, (getHeight()+fm.getAscent())/2 - 2);
                     g2.dispose();
+                }
+            };
+            b.setPreferredSize(new Dimension(160, 45));
+            b.setContentAreaFilled(false); b.setBorderPainted(false); b.setFocusPainted(false); b.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            return b;
+        }
+
+        private void addSidebarBtn(JPanel p, String text, boolean active, java.awt.event.ActionListener act) {
+            SidebarItem btn = new SidebarItem(text, active);
+            btn.addActionListener(act);
+            btn.addActionListener(e -> { for(SidebarItem b: sidebarButtons) b.setActive(b==btn); });
+            sidebarButtons.add(btn);
+            p.add(btn); p.add(Box.createRigidArea(new Dimension(0, 10)));
+        }
+
+        private JButton createSimpleLinkBtn(String text) {
+            JButton b = new JButton(text) {
+                protected void paintComponent(Graphics g) {
+                    setForeground(isDarkMode() ? new Color(160, 200, 180) : Color.BLACK);
                     super.paintComponent(g);
                 }
             };
-            btn.setFont(new Font("Segoe UI", Font.BOLD, 12));
-            btn.setForeground(Color.WHITE);
-            btn.setPreferredSize(new Dimension(190, 48));
-            btn.setContentAreaFilled(false);
-            btn.setBorderPainted(false);
-            btn.setFocusPainted(false);
-            btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-            btn.addActionListener(action);
-            return btn;
+            b.setAlignmentX(Component.LEFT_ALIGNMENT);
+            b.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+            b.setContentAreaFilled(false); b.setBorderPainted(false); b.setFocusPainted(false); b.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            b.addMouseListener(new java.awt.event.MouseAdapter() {
+                public void mouseEntered(java.awt.event.MouseEvent e) { b.setForeground(currentAccentColor); }
+                public void mouseExited(java.awt.event.MouseEvent e) { b.setForeground(isDarkMode() ? new Color(160, 200, 180) : Color.BLACK); }
+            });
+            return b;
         }
-    }// --- END OF PaLOHomePage ---
 
-
-    private void startFocusSession(JDialog dialog, int workMins, int restMins) {
-        dialog.getContentPane().removeAll();
-
-        BackgroundPanel sessionBG = new BackgroundPanel("assets/focus_bg.jpg");
-        sessionBG.setLayout(new GridBagLayout());
-        GridBagConstraints gbc = new GridBagConstraints();
-
-        // 1. Status Label
-        JLabel statusLabel = new JLabel("FOCUSING...");
-        statusLabel.setFont(new Font("Segoe UI Black", Font.BOLD, 32));
-        statusLabel.setForeground(currentAccentColor);
-        gbc.gridx = 0; gbc.gridy = 0;
-        sessionBG.add(statusLabel, gbc);
-
-        // 2. The Clock
-        CircularTimer timer = new CircularTimer();
-        timer.setPreferredSize(new Dimension(450, 450));
-        timer.setSeconds(workMins * 60);
-        timer.setRunning(true);
-        gbc.gridy = 1; gbc.insets = new Insets(30, 0, 30, 0);
-        sessionBG.add(timer, gbc);
-
-        // 3. Lo-Fi Toggle
-        ModernToggle musicToggle = new ModernToggle("LO-FI MODE");
-        musicToggle.addActionListener(e -> {
-            musicToggle.toggle();
-            if(musicToggle.isActive()) playZenMusic(); else stopZenMusic();
-        });
-        gbc.gridy = 2; gbc.insets = new Insets(0, 0, 0, 0);
-        sessionBG.add(musicToggle, gbc);
-
-        // 4. Session Manager Logic
-        // This background timer updates every second to check if work is done
-        javax.swing.Timer workManager = new javax.swing.Timer(1000, null);
-        workManager.addActionListener(e -> {
-            int currentSecs = timer.getSeconds();
-            if (currentSecs > 0) {
-                timer.setSeconds(currentSecs - 1);
-            } else {
-                workManager.stop();
-                stopZenMusic();
-                triggerRestMode(dialog, restMins);
+        private void closeAndSwitch() {
+            OfflineTutorApp mainApp = (OfflineTutorApp) getOwner();
+            if(mainApp != null) {
+                mainApp.syncThemeBackgrounds();
+                if(isChatMode) mainApp.switchToChatMode();
+                else if(isAudioMode) mainApp.switchToAudioMode();
+                else mainApp.switchToQuizMode();
+                mainApp.setLocationRelativeTo(null); mainApp.setVisible(true);
             }
-        });
-        workManager.start();
+            this.dispose();
+        }
 
-        dialog.add(sessionBG);
-        dialog.revalidate();
-        dialog.repaint();
+        private void startDisplayTimer() {
+            new javax.swing.Timer(2000, e -> {
+                if (displayStep++ % 2 == 0) dynamicDisplayLabel.setText(new java.text.SimpleDateFormat("hh:mm a").format(new java.util.Date()));
+                else dynamicDisplayLabel.setText(new java.text.SimpleDateFormat("dd MMM").format(new java.util.Date()));
+            }).start();
+        }
+
+        private class SidebarItem extends JButton {
+            private boolean isActive;
+            private float hoverAlpha = 0.0f;
+            private int shiftX = 0;
+            private javax.swing.Timer animTimer;
+
+            public SidebarItem(String text, boolean active) {
+                super(text); this.isActive = active;
+                setHorizontalAlignment(SwingConstants.LEFT);
+                setFocusPainted(false); setBorderPainted(false); setContentAreaFilled(false);
+                setOpaque(false); setCursor(new Cursor(Cursor.HAND_CURSOR));
+                setBorder(BorderFactory.createEmptyBorder(12, 25, 12, 25));
+                setMaximumSize(new Dimension(240, 50));
+                updateLook();
+
+                addMouseListener(new java.awt.event.MouseAdapter() {
+                    public void mouseEntered(java.awt.event.MouseEvent e) { if (!isActive) startAnimation(true); }
+                    public void mouseExited(java.awt.event.MouseEvent e) { if (!isActive) startAnimation(false); }
+                });
+            }
+
+            private void startAnimation(boolean forward) {
+                if (animTimer != null && animTimer.isRunning()) animTimer.stop();
+                animTimer = new javax.swing.Timer(15, e -> {
+                    boolean done = true;
+                    if (forward && hoverAlpha < 1.0f) { hoverAlpha += 0.15f; if (hoverAlpha > 1.0f) hoverAlpha = 1.0f; done = false; }
+                    else if (!forward && hoverAlpha > 0.0f) { hoverAlpha -= 0.15f; if (hoverAlpha < 0.0f) hoverAlpha = 0.0f; done = false; }
+                    if (forward && shiftX < 6) { shiftX++; done = false; }
+                    else if (!forward && shiftX > 0) { shiftX--; done = false; }
+                    repaint();
+                    if (done) ((javax.swing.Timer) e.getSource()).stop();
+                });
+                animTimer.start();
+            }
+
+            public void setActive(boolean a) { this.isActive = a; if (a) { hoverAlpha = 0; shiftX = 0; } updateLook(); repaint(); }
+
+            public void updateLook() {
+                boolean dark = isDarkMode();
+                setForeground(isActive ? Color.WHITE : (dark ? new Color(180, 200, 190) : Color.BLACK));
+                setFont(new Font("Segoe UI", isActive ? Font.BOLD : Font.PLAIN, 14));
+            }
+
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                if (isActive) {
+                    g2.setColor(currentAccentColor);
+                    g2.fillRoundRect(0, 0, getWidth(), getHeight(), 40, 40);
+                } else if (hoverAlpha > 0) {
+                    g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, hoverAlpha * 0.3f));
+                    g2.setColor(currentAccentColor);
+                    g2.fillRoundRect(0, 0, getWidth(), getHeight(), 40, 40);
+                }
+                g2.dispose();
+                g.translate(shiftX, 0);
+                super.paintComponent(g);
+                g.translate(-shiftX, 0);
+            }
+        }
+
+        private class GlassCardPanel extends JPanel {
+            public GlassCardPanel() { setOpaque(false); setBorder(BorderFactory.createEmptyBorder(15,15,15,15)); }
+            @Override protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                boolean dark = isDarkMode();
+                g2.setColor(dark ? new Color(35, 35, 35) : Color.WHITE);
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
+                g2.setColor(dark ? new Color(60, 60, 60) : new Color(230, 230, 235));
+                g2.setStroke(new BasicStroke(1f));
+                g2.drawRoundRect(0, 0, getWidth()-1, getHeight()-1, 20, 20);
+                g2.dispose();
+                super.paintComponent(g);
+            }
+        }
+
+        class ModernCalendar extends JPanel {
+            private java.util.Calendar currentDisplayDate;
+            private JLabel monthLabel;
+            private JPanel gridPanel;
+            private int selectedDay = -1;
+
+            public ModernCalendar() {
+                currentDisplayDate = java.util.Calendar.getInstance();
+                selectedDay = currentDisplayDate.get(java.util.Calendar.DAY_OF_MONTH);
+                setLayout(new BorderLayout(0, 10)); setOpaque(false);
+                setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+
+                JPanel header = new JPanel(new BorderLayout()); header.setOpaque(false);
+                monthLabel = new JLabel("", SwingConstants.CENTER) {
+                    protected void paintComponent(Graphics g) {
+                        setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
+                        super.paintComponent(g);
+                    }
+                };
+                monthLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
+                monthLabel.setCursor(new Cursor(Cursor.HAND_CURSOR));
+                monthLabel.addMouseListener(new java.awt.event.MouseAdapter() {
+                    public void mouseClicked(java.awt.event.MouseEvent e) { showDateSelectionDialog(); }
+                });
+                header.add(createNavButton("<", -1), BorderLayout.WEST);
+                header.add(monthLabel, BorderLayout.CENTER);
+                header.add(createNavButton(">", 1), BorderLayout.EAST);
+                add(header, BorderLayout.NORTH);
+
+                gridPanel = new JPanel(new GridLayout(0, 7, 3, 3)); gridPanel.setOpaque(false);
+                add(gridPanel, BorderLayout.CENTER);
+                refreshCalendar();
+            }
+
+            private JButton createNavButton(String text, int offset) {
+                JButton b = new JButton(text); b.setContentAreaFilled(false); b.setBorderPainted(false);
+                b.setForeground(Color.GRAY); b.setFont(new Font("Segoe UI", Font.BOLD, 16));
+                b.addActionListener(e -> { currentDisplayDate.add(java.util.Calendar.MONTH, offset); refreshCalendar(); });
+                return b;
+            }
+
+            private void showDateSelectionDialog() {
+                JPanel p = new JPanel(new GridLayout(1, 2));
+                String[] ms = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+                JComboBox<String> mb = new JComboBox<>(ms);
+                mb.setSelectedIndex(currentDisplayDate.get(java.util.Calendar.MONTH));
+                JSpinner ys = new JSpinner(new SpinnerNumberModel(currentDisplayDate.get(java.util.Calendar.YEAR), 1900, 2100, 1));
+                p.add(mb); p.add(ys);
+                if (JOptionPane.showConfirmDialog(this, p, "Jump to", JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION) {
+                    currentDisplayDate.set(java.util.Calendar.MONTH, mb.getSelectedIndex());
+                    currentDisplayDate.set(java.util.Calendar.YEAR, (Integer) ys.getValue());
+                    refreshCalendar();
+                }
+            }
+
+            private void refreshCalendar() {
+                gridPanel.removeAll();
+                java.util.Calendar calDate = (java.util.Calendar) currentDisplayDate.clone();
+                calDate.set(java.util.Calendar.DAY_OF_MONTH, 1);
+                monthLabel.setText(new java.text.SimpleDateFormat("MMM yyyy").format(calDate.getTime()));
+
+                String[] days = {"S", "M", "T", "W", "T", "F", "S"};
+                for (String d : days) {
+                    JLabel l = new JLabel(d, SwingConstants.CENTER);
+                    l.setForeground(Color.GRAY); l.setFont(new Font("Segoe UI", Font.BOLD, 10));
+                    gridPanel.add(l);
+                }
+                for (int i = 0; i < calDate.get(java.util.Calendar.DAY_OF_WEEK) - 1; i++) gridPanel.add(new JLabel(""));
+
+                java.util.Calendar now = java.util.Calendar.getInstance();
+                int tDay = -1;
+                if (now.get(java.util.Calendar.MONTH) == calDate.get(java.util.Calendar.MONTH) && now.get(java.util.Calendar.YEAR) == calDate.get(java.util.Calendar.YEAR)) tDay = now.get(java.util.Calendar.DAY_OF_MONTH);
+                final int today = tDay;
+
+                for (int i = 1; i <= calDate.getActualMaximum(java.util.Calendar.DAY_OF_MONTH); i++) {
+                    final int d = i;
+                    JLabel cell = new JLabel(String.valueOf(i), SwingConstants.CENTER) {
+                        protected void paintComponent(Graphics g) {
+                            Color liveAccent = OfflineTutorApp.this.currentAccentColor;
+                            if (d == selectedDay) { g.setColor(liveAccent); g.fillOval(getWidth()/2-10, getHeight()/2-10, 20, 20); setForeground(Color.BLACK); }
+                            else if (d == today) { g.setColor(liveAccent); g.drawOval(getWidth()/2-10, getHeight()/2-10, 19, 19); setForeground(liveAccent); }
+                            else { setForeground(isDarkMode() ? Color.WHITE : Color.BLACK); }
+                            super.paintComponent(g);
+                        }
+                    };
+                    cell.setCursor(new Cursor(Cursor.HAND_CURSOR));
+                    cell.addMouseListener(new java.awt.event.MouseAdapter() {
+                        public void mouseClicked(java.awt.event.MouseEvent e) {
+                            selectedDay = d;
+                            refreshCalendar();
+
+                            java.util.Calendar clickedCal = (java.util.Calendar) currentDisplayDate.clone();
+                            clickedCal.set(java.util.Calendar.DAY_OF_MONTH, selectedDay);
+                            String dateStr = new java.text.SimpleDateFormat("dd MMM yyyy").format(clickedCal.getTime());
+                            PaLOHomePage.this.refreshRecentFilesTable(dateStr);
+                        }
+                    });
+                    gridPanel.add(cell);
+                }
+                gridPanel.revalidate(); gridPanel.repaint();
+            }
+        }
+
+        private class DailyLineGraphPanel extends JPanel {
+            private List<Float> currentPlotData = new ArrayList<>();
+
+            public DailyLineGraphPanel() {
+                setOpaque(false);
+                setPreferredSize(new Dimension(400, 220));
+            }
+
+            public void setPlotData(List<Float> fileHistory) {
+                this.currentPlotData.clear();
+                if (fileHistory == null || fileHistory.isEmpty()) {
+                    currentPlotData.add(0.0f);
+                    currentPlotData.add(0.0f);
+                } else if (fileHistory.size() == 1) {
+                    currentPlotData.add(fileHistory.get(0));
+                    currentPlotData.add(fileHistory.get(0));
+                } else {
+                    float sum = 0;
+                    for (int i = 0; i < fileHistory.size(); i++) {
+                        sum += fileHistory.get(i);
+                        currentPlotData.add(sum / (i + 1));
+                    }
+                }
+                repaint();
+            }
+
+            @Override
+            protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                int mL = 50, mB = 35, mR = 20, mT = 20;
+                int w = getWidth(), h = getHeight();
+                int gW = w - mL - mR, gH = h - mT - mB;
+
+                g2.setColor(isDarkMode() ? new Color(255, 255, 255, 80) : new Color(0,0,0,40));
+                g2.drawLine(mL, mT, mL, mT + gH);
+                g2.drawLine(mL, mT + gH, mL + gW, mT + gH);
+
+                if (currentPlotData.isEmpty()) { g2.dispose(); return; }
+
+                double xScale = (double) gW / (currentPlotData.size() - 1);
+                java.util.List<Point> pts = new java.util.ArrayList<>();
+                for (int i = 0; i < currentPlotData.size(); i++) {
+                    int x = (int) (mL + i * xScale);
+                    int y = (int) (mT + gH - currentPlotData.get(i) * gH);
+                    pts.add(new Point(x, y));
+                }
+
+                Path2D path = new Path2D.Double();
+                path.moveTo(pts.get(0).x, mT + gH);
+                for (Point p : pts) path.lineTo(p.x, p.y);
+                path.lineTo(pts.get(pts.size() - 1).x, mT + gH);
+                path.closePath();
+
+                Color liveAccent = OfflineTutorApp.this.currentAccentColor;
+                g2.setPaint(new GradientPaint(0, mT, new Color(liveAccent.getRed(), liveAccent.getGreen(), liveAccent.getBlue(), 80), 0, mT + gH, new Color(liveAccent.getRed(), liveAccent.getGreen(), liveAccent.getBlue(), 0)));
+                g2.fill(path);
+
+                g2.setStroke(new BasicStroke(3f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g2.setColor(liveAccent);
+                for (int i = 0; i < pts.size() - 1; i++) {
+                    g2.drawLine(pts.get(i).x, pts.get(i).y, pts.get(i+1).x, pts.get(i+1).y);
+                }
+
+                for (Point p : pts) {
+                    g2.setColor(isDarkMode() ? Color.WHITE : Color.DARK_GRAY);
+                    g2.fillOval(p.x - 4, p.y - 4, 8, 8);
+                    g2.setColor(liveAccent);
+                    g2.drawOval(p.x - 4, p.y - 4, 8, 8);
+                }
+                g2.dispose();
+            }
+        }
     }
 
     private void playNotificationBell() {
@@ -2944,145 +3662,62 @@ public class OfflineTutorApp extends JFrame {
         }).start();
     }
 
-    private void triggerRestMode(JDialog dialog, int restMins) {
-        dialog.getContentPane().removeAll();
-
-        // Use a different, calmer background for rest if available
+    private void triggerRestModeInternal(int restMins) {
+        focusPanel.removeAll();
         BackgroundPanel restBG = new BackgroundPanel("assets/rest_bg.jpg");
         restBG.setLayout(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
 
-        // 1. Rest Title
-        JLabel restLabel = new JLabel("TIME TO RELAX");
+        JLabel restLabel = new JLabel("TIME TO RECHARGE");
         restLabel.setFont(new Font("Segoe UI Black", Font.BOLD, 32));
-        restLabel.setForeground(new Color(46, 204, 113)); // Minimalist Green
-        gbc.gridx = 0; gbc.gridy = 0;
-        restBG.add(restLabel, gbc);
+        restLabel.setForeground(new Color(46, 204, 113));
 
-        // 2. The Rest Clock
         CircularTimer restTimer = new CircularTimer();
-        restTimer.setPreferredSize(new Dimension(400, 400));
         restTimer.setSeconds(restMins * 60);
         restTimer.setRunning(true);
-        // Temporarily override the theme color for the rest clock
-        // Note: You might need to add a setColor method to CircularTimer for this
-        gbc.gridy = 1; gbc.insets = new Insets(30, 0, 30, 0);
-        restBG.add(restTimer, gbc);
 
-        // 3. Finish/Back Button
-        JButton btnExit = new JButton("FINISH SESSION") {
-            @Override
-            protected void paintComponent(Graphics g) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setColor(getModel().isRollover() ? new Color(46, 204, 113) : new Color(255, 255, 255, 30));
-                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 15, 15);
-                super.paintComponent(g);
-                g2.dispose();
-            }
-        };
-        btnExit.setFont(new Font("Segoe UI Bold", Font.PLAIN, 14));
-        btnExit.setForeground(Color.WHITE);
-        btnExit.setPreferredSize(new Dimension(200, 50));
-        btnExit.setContentAreaFilled(false);
-        btnExit.setBorderPainted(false);
-        btnExit.addActionListener(e -> dialog.dispose());
-
-        gbc.gridy = 2;
-        restBG.add(btnExit, gbc);
-
-        // 4. Break Manager Logic
-        javax.swing.Timer breakManager = new javax.swing.Timer(1000, null);
-        breakManager.addActionListener(e -> {
-            int currentSecs = restTimer.getSeconds();
-            if (currentSecs > 0) {
-                restTimer.setSeconds(currentSecs - 1);
+        javax.swing.Timer breakManager = new javax.swing.Timer(1000, e -> {
+            if (restTimer.getSeconds() > 0) {
+                restTimer.setSeconds(restTimer.getSeconds() - 1);
             } else {
-                breakManager.stop();
-                restLabel.setText("BREAK OVER!");
+                ((javax.swing.Timer)e.getSource()).stop();
+                switchToFocusMode();
             }
         });
+
+        gbc.gridy = 0; gbc.insets = new Insets(0, 0, 20, 0);
+        restBG.add(restLabel, gbc);
+        gbc.gridy = 1;
+        restBG.add(restTimer, gbc);
+
+        focusPanel.add(restBG, BorderLayout.CENTER);
+        focusPanel.revalidate();
+        focusPanel.repaint();
         breakManager.start();
-
-        dialog.add(restBG);
-        dialog.revalidate();
-        dialog.repaint();
     }
 
-    private JButton createModernToggle(String text) {
-        JButton toggle = new JButton(text + ": OFF") {
-            private boolean active = false;
-            @Override
-            protected void paintComponent(Graphics g) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
-                // Background of the switch
-                g2.setColor(active ? currentAccentColor : new Color(255, 255, 255, 30));
-                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 25, 25);
-
-                // The "Sliding" knob indicator
-                g2.setColor(Color.WHITE);
-                int knobSize = getHeight() - 10;
-                int x = active ? (getWidth() - knobSize - 5) : 5;
-                g2.fillOval(x, 5, knobSize, knobSize);
-
-                super.paintComponent(g);
-                g2.dispose();
-            }
-
-            public boolean isActive() { return active; }
-            public void toggle() {
-                active = !active;
-                setText(text + (active ? ": ON" : ": OFF"));
-                repaint();
-            }
-        };
-
-        toggle.setFont(new Font("Segoe UI Bold", Font.PLAIN, 12));
-        toggle.setForeground(Color.WHITE);
-        toggle.setPreferredSize(new Dimension(140, 40));
-        toggle.setContentAreaFilled(false);
-        toggle.setBorderPainted(false);
-        toggle.setFocusPainted(false);
-        toggle.setCursor(new Cursor(Cursor.HAND_CURSOR));
-
-        toggle.addActionListener(e -> ((JButton)e.getSource()).getParent().repaint()); // Trigger redraw
-        return toggle;
-    }
-
-
-
-    // Add this to your class fields
-    private Color currentAccentColor = new Color(0, 220, 255); // Default Electric Cyan
-
-    private Map<String, Color[]> getThemes() {
-        Map<String, Color[]> themes = new HashMap<>();
-        // Format: { Primary Accent, Hover/Secondary }
-        themes.put("Spider-Verse Red", new Color[]{new Color(231, 76, 60), new Color(255, 45, 85)});
-        themes.put("Deep Sea Blue", new Color[]{new Color(0, 220, 255), new Color(52, 152, 219)});
-        themes.put("Emerald Forest", new Color[]{new Color(50, 255, 120), new Color(46, 204, 113)});
-        return themes;
-    }
 
     private JButton createTechniqueButton(String title, String subtitle, Color theme) {
+        String subColor = isDarkMode() ? "#BBBBBB" : "#444444";
         JButton btn = new JButton("<html><center><b>" + title + "</b><br>" +
-                "<font size='3' color='#BBBBBB'>" + subtitle + "</font></center></html>") {
+                "<font size='3' color='" + subColor + "'>" + subtitle + "</font></center></html>"){
             @Override
             protected void paintComponent(Graphics g) {
                 Graphics2D g2 = (Graphics2D) g.create();
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
-                // Highlight with theme color on hover, otherwise dark glass
-                g2.setColor(getModel().isRollover() ? theme : new Color(255, 255, 255, 20));
+                boolean isDark = isDarkMode();
+                if (getModel().isRollover()) {
+                    g2.setColor(theme);
+                } else {
+                    g2.setColor(isDark ? new Color(255, 255, 255, 20) : new Color(0, 0, 0, 20));
+                }
                 g2.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
-
                 super.paintComponent(g);
                 g2.dispose();
             }
         };
         btn.setFont(new Font("Segoe UI", Font.PLAIN, 18));
-        btn.setForeground(Color.WHITE);
+        btn.setForeground(isDarkMode() ? Color.WHITE : Color.BLACK);
         btn.setPreferredSize(new Dimension(280, 100));
         btn.setContentAreaFilled(false);
         btn.setBorderPainted(false);
@@ -3091,64 +3726,28 @@ public class OfflineTutorApp extends JFrame {
         return btn;
     }
 
-    private void openSettings() {
-        JPanel panel = new JPanel(new GridLayout(0, 1, 15, 15));
-        panel.setBackground(new Color(40, 40, 40));
-        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
 
-        JLabel label = new JLabel("SELECT GLOBAL THEME");
-        label.setForeground(Color.WHITE);
-        label.setFont(new Font("Segoe UI Bold", Font.PLAIN, 14));
-
-        Map<String, Color[]> themes = getThemes();
-        JComboBox<String> themeBox = new JComboBox<>(themes.keySet().toArray(new String[0]));
-
-        themeBox.addActionListener(e -> {
-            String selected = (String) themeBox.getSelectedItem();
-            // Inside your themeBox ActionListener
-            currentAccentColor = themes.get(selected)[0];
-            SwingUtilities.updateComponentTreeUI(this); // Forces the entire window to refresh colors
-            this.repaint();
-        });
-
-        panel.add(label);
-        panel.add(themeBox);
-
-        JOptionPane.showMessageDialog(this, panel, "Settings", JOptionPane.PLAIN_MESSAGE);
-    }
 
     private static class TutorTranslator implements Translator<float[], Float> {
         private final int FIXED_SEQUENCE_LENGTH = 10;
-
         @Override
         public NDList processInput(TranslatorContext ctx, float[] input) {
             NDManager manager = ctx.getNDManager();
-
-            // 1. Create a fixed-size buffer filled with neutral values (0.5)
             float[] paddedInput = new float[FIXED_SEQUENCE_LENGTH];
             Arrays.fill(paddedInput, 0.5f);
-
-            // 2. Fill the buffer with the most recent scores from the end
-            // This ensures the LSTM always receives exactly 10 time steps.
             int startIdx = Math.max(0, input.length - FIXED_SEQUENCE_LENGTH);
             int fillCount = Math.min(input.length, FIXED_SEQUENCE_LENGTH);
-
             System.arraycopy(input, startIdx, paddedInput, FIXED_SEQUENCE_LENGTH - fillCount, fillCount);
-
-            // 3. Reshape for LSTM: [Batch Size (1), Time Steps (10), Features (1)]
             return new NDList(manager.create(paddedInput).reshape(1, FIXED_SEQUENCE_LENGTH, 1));
         }
-
         @Override
         public Float processOutput(TranslatorContext ctx, NDList list) {
-            // DJL returns an NDArray; singletonOrThrow gets the single probability value
             return list.singletonOrThrow().getFloat();
         }
     }
 
     private void setAppIcon() {
         try {
-            // Path to your logo file
             File iconFile = new File("logo.png");
             if (iconFile.exists()) {
                 BufferedImage img = ImageIO.read(iconFile);
@@ -3162,7 +3761,6 @@ public class OfflineTutorApp extends JFrame {
     }
 
     private void resetButtonStyles() {
-        // Reset buttons to their default state (matching your createOptionButton styling)
         QuizOptionButton[] buttons = {btnA, btnB, btnC, btnD};
         for (QuizOptionButton btn : buttons) {
             btn.resetVisual();
@@ -3171,7 +3769,432 @@ public class OfflineTutorApp extends JFrame {
 
     public static void main(String[] args) {
         com.formdev.flatlaf.FlatDarkLaf.setup();
-        // Launch the app constructor on the Event Dispatch Thread
         SwingUtilities.invokeLater(() -> new OfflineTutorApp());
+    }
+
+    private class VoiceAssistant {
+        private com.sun.speech.freetts.Voice voice;
+        public VoiceAssistant() {
+            System.setProperty("freetts.voices", "com.sun.speech.freetts.en.us.cmu_us_kal.KevinVoiceDirectory");
+            this.voice = com.sun.speech.freetts.VoiceManager.getInstance().getVoice("kevin16");
+            if (this.voice != null) {
+                this.voice.allocate();
+                this.voice.setRate(130.0f);
+                this.voice.setPitch(110.0f);
+            } else {
+                System.err.println("Error: Kevin16 voice not found in classpath.");
+            }
+        }
+        public void setRate(float rate) {
+            if (voice != null) voice.setRate(rate);
+        }
+        public void setPitch(float pitch) {
+            if (voice != null) voice.setPitch(pitch);
+        }
+        public void speak(String text) {
+            if (voice == null || text == null) return;
+            if (!isSpeechEnabled) {
+                voice.getAudioPlayer().cancel();
+                return;
+            }
+            new Thread(() -> {
+                try {
+                    voice.getAudioPlayer().cancel();
+                    voice.speak(text);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }).start();
+        }
+    }
+
+    class FlashcardDeckDialog extends JDialog {
+        private int currentIndex = 0;
+        private boolean isFlipped = false;
+
+        public FlashcardDeckDialog(Frame owner, String[][] cards) {
+            super(owner, "PaLO Flashcard Study", true);
+            setSize(700, 450);
+            setLocationRelativeTo(owner);
+            boolean isDark = UIManager.getLookAndFeel().getClass().getName().contains("Dark");
+            getContentPane().setBackground(isDark ? new Color(18, 18, 18) : Color.WHITE);
+            setLayout(new BorderLayout());
+
+            JPanel cardContainer = new JPanel(new CardLayout());
+            cardContainer.setOpaque(false);
+            cardContainer.setBorder(BorderFactory.createEmptyBorder(30, 50, 30, 50));
+
+            JLabel contentLabel = new JLabel("", SwingConstants.CENTER);
+            contentLabel.setFont(new Font("Segoe UI Semibold", Font.PLAIN, 28));
+
+            JPanel mainCard = new JPanel(new BorderLayout()) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    boolean isDarkScope = UIManager.getLookAndFeel().getClass().getName().contains("Dark");
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    if (isDarkScope) {
+                        g2.setColor(isFlipped ? new Color(30, 40, 50) : new Color(45, 45, 45));
+                    } else {
+                        g2.setColor(isFlipped ? new Color(220, 240, 255) : new Color(240, 240, 240));
+                    }
+                    g2.fillRoundRect(0, 0, getWidth(), getHeight(), 30, 30);
+                    g2.setColor(isFlipped ? new Color(0, 220, 255) : (isDarkScope ? new Color(100, 100, 100) : new Color(180, 180, 180)));
+                    g2.setStroke(new BasicStroke(3));
+                    g2.drawRoundRect(2, 2, getWidth() - 5, getHeight() - 5, 30, 30);
+                    g2.dispose();
+                }
+            };
+            mainCard.setOpaque(false);
+            mainCard.add(contentLabel, BorderLayout.CENTER);
+            mainCard.setCursor(new Cursor(Cursor.HAND_CURSOR));
+
+            Runnable updateUI = () -> {
+                boolean isDarkScope = UIManager.getLookAndFeel().getClass().getName().contains("Dark");
+                isFlipped = false;
+                contentLabel.setText("<html><center>" + cards[currentIndex][0] + "</center></html>");
+                contentLabel.setForeground(isDarkScope ? Color.WHITE : Color.BLACK);
+                mainCard.repaint();
+            };
+
+            mainCard.addMouseListener(new MouseAdapter() {
+                public void mouseClicked(MouseEvent e) {
+                    boolean isDarkScope = UIManager.getLookAndFeel().getClass().getName().contains("Dark");
+                    isFlipped = !isFlipped;
+                    if (isFlipped) {
+                        contentLabel.setText("<html><center style='padding:20px;'>" + cards[currentIndex][1] + "</center></html>");
+                        contentLabel.setForeground(isDarkScope ? new Color(0, 220, 255) : new Color(0, 150, 200));
+                    } else {
+                        contentLabel.setText("<html><center>" + cards[currentIndex][0] + "</center></html>");
+                        contentLabel.setForeground(isDarkScope ? Color.WHITE : Color.BLACK);
+                    }
+                    mainCard.repaint();
+                }
+            });
+
+            JButton btnPrev = createNavArrow("«");
+            JButton btnNext = createNavArrow("»");
+
+            btnPrev.addActionListener(e -> {
+                if (currentIndex > 0) { currentIndex--; updateUI.run(); }
+            });
+            btnNext.addActionListener(e -> {
+                if (currentIndex < cards.length - 1) { currentIndex++; updateUI.run(); }
+            });
+
+            JPanel centerPanel = new JPanel(new BorderLayout(20, 0));
+            centerPanel.setOpaque(false);
+            centerPanel.add(btnPrev, BorderLayout.WEST);
+            centerPanel.add(mainCard, BorderLayout.CENTER);
+            centerPanel.add(btnNext, BorderLayout.EAST);
+
+            JLabel hint = new JLabel("Click the card to reveal the answer", SwingConstants.CENTER);
+            hint.setForeground(Color.GRAY);
+            hint.setBorder(BorderFactory.createEmptyBorder(0, 0, 20, 0));
+
+            add(centerPanel, BorderLayout.CENTER);
+            add(hint, BorderLayout.SOUTH);
+            updateUI.run();
+        }
+
+        private JButton createNavArrow(String arrow) {
+            JButton b = new JButton(arrow);
+            b.setFont(new Font("Segoe UI", Font.BOLD, 40));
+            b.setForeground(new Color(100, 100, 100));
+            b.setContentAreaFilled(false);
+            b.setBorderPainted(false);
+            b.setFocusPainted(false);
+            b.setCursor(new Cursor(Cursor.HAND_CURSOR));
+            b.addMouseListener(new MouseAdapter() {
+                public void mouseEntered(MouseEvent e) {
+                    boolean isDarkScope = UIManager.getLookAndFeel().getClass().getName().contains("Dark");
+                    b.setForeground(isDarkScope ? Color.WHITE : Color.BLACK);
+                }
+                public void mouseExited(MouseEvent e) {
+                    b.setForeground(new Color(100, 100, 100));
+                }
+            });
+            return b;
+        }
+    }
+
+    public void startFlashcardWorkflow() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Select Textbook for Flashcards");
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+
+        File selectedFile = chooser.getSelectedFile();
+        logRecentFile(selectedFile.getName(), "Flashcards", 10);
+        JDialog progress = new JDialog(this, "PaLO - Thinking", true);
+        progress.add(new JLabel("AI is extracting concepts and creating cards...", SwingConstants.CENTER));
+        progress.setSize(400, 100);
+        progress.setLocationRelativeTo(this);
+
+        new Thread(() -> {
+            try {
+                String text = processPDF(selectedFile);
+                if (text.length() > 4000) text = text.substring(0, 4000);
+
+                String prompt = "Extract 10 key concepts from this text and turn them into Flashcards.\n" +
+                        "Format your response EXACTLY using these XML tags:\n" +
+                        "<card>\n" +
+                        "<front>Question or Term</front>\n" +
+                        "<back>Concise 1-sentence explanation</back>\n" +
+                        "</card>";
+
+                String raw = llamaConnection.generateMCQs(text, prompt, 10);
+
+                Pattern cardPattern = Pattern.compile("<card>(.*?)</card>", Pattern.DOTALL);
+                Pattern fPattern = Pattern.compile("<front>(.*?)</front>", Pattern.DOTALL);
+                Pattern bPattern = Pattern.compile("<back>(.*?)</back>", Pattern.DOTALL);
+
+                Matcher cMatcher = cardPattern.matcher(raw);
+                List<String[]> tempCards = new ArrayList<>();
+                while(cMatcher.find()) {
+                    String block = cMatcher.group(1);
+                    Matcher fm = fPattern.matcher(block);
+                    Matcher bm = bPattern.matcher(block);
+                    if (fm.find() && bm.find()) {
+                        tempCards.add(new String[]{fm.group(1).trim(), bm.group(1).trim()});
+                    }
+                }
+
+                if (tempCards.isEmpty()) {
+                    throw new Exception("Regex extracted 0 valid flashcards. Please try again.");
+                }
+
+                String[][] cards = tempCards.toArray(new String[0][0]);
+
+                SwingUtilities.invokeLater(() -> {
+                    progress.dispose();
+                    new FlashcardDeckDialog(OfflineTutorApp.this, cards).setVisible(true); // <-- FIXED
+                });
+            } catch (Exception ex) {
+                SwingUtilities.invokeLater(() -> {
+                    progress.dispose();
+                    JOptionPane.showMessageDialog(this, "AI Error: " + ex.getMessage());
+                });
+            }
+        }).start();
+        progress.setVisible(true);
+    }
+
+    private void setupLoadingOverlay() {
+        loadingOverlay = new JPanel(new GridBagLayout());
+        // Semi-transparent black background
+        loadingOverlay.setBackground(new Color(0, 0, 0, 160));
+
+        JLabel label = new JLabel("PaLO is Orchestrating Questions...") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                setForeground(Color.WHITE);
+                super.paintComponent(g);
+            }
+        };
+        label.setFont(new Font("Segoe UI Semibold", Font.BOLD, 26));
+
+        // Add a spinner or progress bar inside the overlay for movement
+        JProgressBar miniBar = new JProgressBar();
+        miniBar.setIndeterminate(true);
+        miniBar.setPreferredSize(new Dimension(300, 5));
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.gridx = 0; gbc.gridy = 0; gbc.insets = new Insets(0,0,20,0);
+        loadingOverlay.add(label, gbc);
+
+        gbc.gridy = 1;
+        loadingOverlay.add(miniBar, gbc);
+
+        // Block mouse clicks from reaching the buttons underneath
+        loadingOverlay.addMouseListener(new MouseAdapter() {});
+    }
+
+    // NEW METHOD: Extracts answers from step-by-step text when Regex fails entirely
+    // NEW METHOD: Intelligently extracts the question and answer from step-by-step math output
+    private QuizItem salvageQuestionFromText(String rawText, String diff) {
+        try {
+            String correctAnswer = "Solution";
+            // Extract the boxed answer using Regex
+            java.util.regex.Matcher mBox = java.util.regex.Pattern.compile("\\\\boxed\\{([^}]*)\\}").matcher(rawText);
+            if (mBox.find()) {
+                correctAnswer = mBox.group(1).replaceAll("\\\\text\\{.*?\\}", "").replaceAll("[\\\\(\\\\)]", "").trim();
+            }
+
+            // SMART FIX: Extract the actual question from the AI's introductory sentence
+            String questionText = "What is the correct mathematical solution based on the text?";
+            java.util.regex.Matcher mQ = java.util.regex.Pattern.compile("(?i)to find (.*?)[.,]").matcher(rawText);
+            if (mQ.find()) {
+                questionText = "Find " + mQ.group(1).trim() + ".";
+                // Capitalize the first letter for proper formatting
+                questionText = questionText.substring(0, 1).toUpperCase() + questionText.substring(1);
+            }
+
+            // Prevent insanely long strings from breaking the UI
+            if (correctAnswer.length() > 50) correctAnswer = correctAnswer.substring(0, 50);
+
+            List<String> rawOptions = new ArrayList<>();
+            rawOptions.add(correctAnswer);
+
+            // Create somewhat realistic fake multiple-choice options based on the correct answer
+            String fake1 = correctAnswer.replace("2", "3").replace("4", "5").replace("1", "2");
+            if (fake1.equals(correctAnswer)) fake1 = "None of the above";
+
+            String fake2 = correctAnswer.replace("2", "4").replace("4", "8").replace("5", "10");
+            if (fake2.equals(correctAnswer)) fake2 = "Data insufficient";
+
+            String fake3 = "Cannot be determined";
+
+            rawOptions.add(fake1);
+            rawOptions.add(fake2);
+            rawOptions.add(fake3);
+
+            Collections.shuffle(rawOptions);
+
+            List<String> labeledOptions = new ArrayList<>();
+            String finalLabeledAnswer = "";
+            char label = 'A';
+            for (String optText : rawOptions) {
+                String fullOpt = label + ". " + optText;
+                labeledOptions.add(fullOpt);
+                if (optText.equalsIgnoreCase(correctAnswer)) finalLabeledAnswer = fullOpt;
+                label++;
+            }
+            if (finalLabeledAnswer.isEmpty()) finalLabeledAnswer = labeledOptions.get(0);
+
+            return new QuizItem(questionText, questionText, finalLabeledAnswer, labeledOptions, diff);
+
+        } catch (Exception e) {
+            return null; // If fallback completely fails, return null to trigger standard error
+        }
+    }
+    private int[] calculateWeightedBuffer(int totalCount, double[] weights) {
+        int[] allocation = new int[weights.length];
+        int sum = 0;
+
+        // Distribute based on weights
+        for (int i = 0; i < weights.length; i++) {
+            allocation[i] = (int) Math.round(totalCount * weights[i]);
+            sum += allocation[i];
+        }
+
+        // Correct any rounding discrepancies to strictly match the requested total
+        while (sum < totalCount) { allocation[0]++; sum++; } // Push extras to EASY
+        while (sum > totalCount) {
+            for (int i = weights.length - 1; i >= 0; i--) {
+                if (allocation[i] > 0) { allocation[i]--; sum--; break; }
+            }
+        }
+        return allocation; // Returns array: [Easy, Medium, Hard, Expert]
+    }
+
+    private boolean isAllPoolsEmpty() {
+        return easyQuestions.isEmpty() && easyMediumQuestions.isEmpty() &&
+                mediumQuestions.isEmpty() && mediumHardQuestions.isEmpty() &&
+                hardQuestions.isEmpty() && expertQuestions.isEmpty();
+    }
+    // --- RECENT FILES TRACKING ---
+    private void loadRecentFiles() {
+        try {
+            File f = new File("recent_files.json");
+            if (f.exists()) {
+                Scanner scanner = new Scanner(f);
+                String content = scanner.useDelimiter("\\Z").next();
+                scanner.close();
+                JsonArray arr = JsonParser.parseString(content).getAsJsonArray();
+                recentFilesList.clear();
+                for (JsonElement el : arr) {
+                    recentFilesList.add(el.getAsJsonObject());
+                }
+            }
+        } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    private void saveRecentFiles() {
+        try {
+            FileWriter fw = new FileWriter("recent_files.json");
+            JsonArray arr = new JsonArray();
+            for (JsonObject obj : recentFilesList) arr.add(obj);
+            fw.write(arr.toString());
+            fw.close();
+        } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    public void logRecentFile(String fileName, String subject, int qs) {
+        final String finalFileName = fileName.length() > 22 ? fileName.substring(0, 19) + "..." : fileName;
+
+        JsonObject obj = new JsonObject();
+        obj.addProperty("date", new java.text.SimpleDateFormat("dd MMM yyyy").format(new java.util.Date()));
+        obj.addProperty("time", new java.text.SimpleDateFormat("hh:mm a").format(new java.util.Date()));
+        obj.addProperty("fileName", finalFileName);
+        obj.addProperty("subject", subject);
+        obj.addProperty("qs", String.valueOf(qs));
+        obj.add("history", new JsonArray());
+
+        // Add to the top of the list without deleting older attempts of the same file
+        recentFilesList.add(0, obj);
+
+        // Increased to 500 so you never lose a day's history
+        if (recentFilesList.size() > 500) recentFilesList.remove(recentFilesList.size() - 1);
+
+        saveRecentFiles();
+
+        if (homePageInstance != null) {
+            // Auto-refresh the table to show today's updated list
+            String today = new java.text.SimpleDateFormat("dd MMM yyyy").format(new java.util.Date());
+            SwingUtilities.invokeLater(() -> homePageInstance.refreshRecentFilesTable(today));
+        }
+    }
+    public void setMostRecentDashboard(PaLOHomePage dashboard) {
+        this.homePageInstance = dashboard;
+    }
+
+    public void applyThemePreset(String name) {
+        ThemePreset target = PRESETS.get(name);
+        if (target == null) return;
+
+        final Color startSide = this.sidebarColor;
+        final Color startWindow = this.windowColor;
+        final Color startAccent = this.currentAccentColor;
+        final long duration = 400;
+        final long startTime = System.currentTimeMillis();
+
+        try {
+            if (target.isDark) UIManager.setLookAndFeel(new com.formdev.flatlaf.FlatDarkLaf());
+            else UIManager.setLookAndFeel(new com.formdev.flatlaf.FlatLightLaf());
+        } catch (Exception ex) { ex.printStackTrace(); }
+
+        javax.swing.Timer transitionTimer = new javax.swing.Timer(16, null);
+        transitionTimer.addActionListener(e -> {
+            long elapsed = System.currentTimeMillis() - startTime;
+            float fraction = Math.min(1.0f, (float) elapsed / duration);
+
+            if (fraction >= 1.0f) {
+                ((javax.swing.Timer) e.getSource()).stop();
+                SwingUtilities.updateComponentTreeUI(this);
+                if (this.homePageInstance != null) this.homePageInstance.refreshColorsDirectly();
+            }
+
+            this.sidebarColor = lerpColor(startSide, target.side, fraction);
+            this.windowColor = lerpColor(startWindow, target.main, fraction);
+            this.currentAccentColor = lerpColor(startAccent, target.accent, fraction);
+
+            syncThemeBackgrounds();
+            if (this.homePageInstance != null && this.homePageInstance.isVisible()) {
+                this.homePageInstance.refreshColorsDirectly();
+            }
+            this.getRootPane().paintImmediately(0, 0, this.getWidth(), this.getHeight());
+        });
+
+        currentThemeName = name;
+        saveProgress();
+        transitionTimer.start();
+    }
+
+    private Color lerpColor(Color s, Color e, float f) {
+        return new Color(
+                (int) (s.getRed() + (e.getRed() - s.getRed()) * f),
+                (int) (s.getGreen() + (e.getGreen() - s.getGreen()) * f),
+                (int) (s.getBlue() + (e.getBlue() - s.getBlue()) * f)
+        );
     }
 }
