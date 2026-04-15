@@ -41,8 +41,7 @@ import java.util.Arrays;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import com.google.gson.JsonArray;
-import dev.langchain4j.model.output.structured.Description;
-import java.util.List;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -1595,60 +1594,23 @@ public class OfflineTutorApp extends JFrame {
         JOptionPane.showMessageDialog(this, "Voice recognition feature coming soon!", "Audio Mode", JOptionPane.INFORMATION_MESSAGE);
     }
 
-    // Import the necessary LangChain4j classes at the top of your file:
-// import dev.langchain4j.model.ollama.OllamaChatModel;
-// import dev.langchain4j.service.AiServices;
-// import java.time.Duration;
-
     private void initAI() {
         try {
-            // --- 1. Existing DJL/PyTorch Initialization ---
             Path modelPath = Paths.get("tutor_brain.pt");
-            boolean neuralLoaded = false;
-
-            if (modelPath.toFile().exists()) {
-                Model model = Model.newInstance("AdaptiveTutor");
-                model.load(modelPath);
-                this.predictor = model.newPredictor(new TutorTranslator());
-                neuralLoaded = true;
-            } else {
-                System.err.println("AI Engine: 'tutor_brain.pt' not found. Predictive scaling disabled.");
+            if (!modelPath.toFile().exists()) {
+                System.err.println("AI Engine: Model file 'tutor_brain.pt' not found. Running in rule-based mode.");
+                return;
             }
-
-            // --- 2. New LangChain4j / Ollama Integration ---
-            // We initialize the Ollama model (ensure Ollama is running on port 11434)
-            dev.langchain4j.model.chat.ChatLanguageModel ollamaModel = dev.langchain4j.model.ollama.OllamaChatModel.builder()
-                    .baseUrl("http://localhost:11434")
-                    .modelName("llama3") // You can change this to "phi3", "mistral", etc.
-                    .timeout(Duration.ofMinutes(2))
-                    .temperature(0.3)    // Lower temperature for more consistent MCQ generation
-                    .build();
-
-            // Create the AI Service (TutorAssistant is the interface you define for MCQs)
-            this.tutorAssistant = dev.langchain4j.service.AiServices.create(TutorAssistant.class, ollamaModel);
-
-            // --- 3. UI Status Update ---
-            final boolean isNeural = neuralLoaded;
+            Model model = Model.newInstance("AdaptiveTutor");
+            model.load(modelPath);
+            this.predictor = model.newPredictor(new TutorTranslator());
             SwingUtilities.invokeLater(() -> {
-                if (aiStatusLabel != null) {
-                    String status = isNeural ? "Neural + LangChain Ready" : "LangChain Ready (Rule-based scaling)";
-                    aiStatusLabel.setText("AI Engine: " + status);
-                    aiStatusLabel.setForeground(new Color(46, 204, 113)); // Success Green
-                }
+                if (aiStatusLabel != null) aiStatusLabel.setText("AI Engine: Neural Network Loaded");
             });
-
         } catch (Exception e) {
             System.err.println("AI Initialization Error: " + e.getMessage());
-            SwingUtilities.invokeLater(() -> {
-                if (aiStatusLabel != null) {
-                    aiStatusLabel.setText("AI Engine: Connection Error");
-                    aiStatusLabel.setForeground(Color.RED);
-                }
-            });
         }
     }
-
-
 
     private void sendChatMessage() {
         String userMessage = chatInput.getText().trim();
@@ -2279,119 +2241,69 @@ public class OfflineTutorApp extends JFrame {
 
     private void generateMCQ(String rawText) throws Exception {
         // 1. Clear all buffers to prevent cross-session contamination
-        easyQuestions.clear();
-        easyMediumQuestions.clear();
-        mediumQuestions.clear();
-        mediumHardQuestions.clear();
-        hardQuestions.clear();
-        expertQuestions.clear();
+        easyQuestions.clear(); easyMediumQuestions.clear();
+        mediumQuestions.clear(); mediumHardQuestions.clear();
+        hardQuestions.clear(); expertQuestions.clear();
 
         SwingUtilities.invokeLater(() -> getGlassPane().setVisible(true));
 
-        new Thread(() -> {
-            try {
-                // 2. Calculate totals
-                int theoryTotal = (int) (targetTheoryCount * 1.6);
-                int numericalTotal = (int) (targetNumericalCount * 1.6);
+        try {
+            // 2. Define the Weighted Distributions [EASY, MEDIUM, HARD, EXPERT]
+            double[] theoryWeights = {0.40, 0.40, 0.15, 0.05}; // Theory bell curve
+            double[] mathWeights = {0.20, 0.30, 0.40, 0.10};   // Math bell curve (leans harder)
 
-                // 3. Use LangChain Service to generate structured data
-                // We pass the context and the counts; LangChain handles the JSON mapping
-                List<QuizItemDTO> generatedItems = new ArrayList<>();
+            // --- TRUE BUFFER SYSTEM: Generate 2.5x more questions than needed ---
+            int theoryBufferTotal = (int) (targetTheoryCount * 1.6);
+            int numericalBufferTotal = (int) (targetNumericalCount * 1.6);
 
-                if (theoryTotal > 0) {
-                    generatedItems.addAll(tutorAssistant.generateQuestions(rawText, theoryTotal));
-                }
-                if (numericalTotal > 0) {
-                    // You could add a specific flag or separate method for numericals in your interface
-                    generatedItems.addAll(tutorAssistant.generateQuestions("NUMERICAL FOCUS: " + rawText, numericalTotal));
-                }
-
-                // 4. Route items to your existing buffers using your internal logic
-                for (QuizItemDTO dto : generatedItems) {
-                    // Convert DTO to your existing QuizItem class
-                    // We ensure labels (A, B, C, D) are applied here if not done by AI
-                    QuizItem item = finalizeAndRouteItem(dto);
-
-                    String diff = dto.difficulty.toUpperCase();
-                    if (diff.contains("EXPERT")) expertQuestions.add(item);
-                    else if (diff.contains("HARD")) hardQuestions.add(item);
-                    else if (diff.contains("MEDIUM")) mediumQuestions.add(item);
-                    else easyQuestions.add(item);
-                }
-
-                // 5. Start the Quiz on UI Thread
-                SwingUtilities.invokeLater(() -> {
-                    getGlassPane().setVisible(false);
-                    if (isAllPoolsEmpty()) {
-                        difficultyLabel.setText("AI Error: Could not generate valid questions.");
-                    } else {
-                        btnConfigQuiz.setVisible(false);
-                        btnScan.setVisible(false);
-                        countLabel.setVisible(false);
-                        questionCountSpinner.setVisible(false);
-                        clockTimer.setEditable(false);
-
-                        masteryContainer.setVisible(true);
-                        studentHistory.clear();
-                        updateAI(0);
-                        loadNextQuestion(currentLevel);
-                    }
-                });
-
-            } catch (Exception e) {
-                SwingUtilities.invokeLater(() -> {
-                    getGlassPane().setVisible(false);
-                    if (e.getMessage() != null && e.getMessage().contains("Connection refused")) {
-                        difficultyLabel.setText("System Offline: Please start Ollama.");
-                        JOptionPane.showMessageDialog(this,
-                                "Cannot connect to the local AI engine (Ollama).\nCheck port 11434.",
-                                "Engine Offline", JOptionPane.ERROR_MESSAGE);
-                    } else {
-                        difficultyLabel.setText("AI Error: " + e.getMessage());
-                    }
-                });
+            // 3. Generate Theory Buffer
+            if (targetTheoryCount > 0) {
+                int[] dist = calculateWeightedBuffer(theoryBufferTotal, theoryWeights);
+                fetchAndRouteQuestions(rawText, dist, false);
             }
-        }).start();
-    }
 
-    private QuizItem finalizeAndRouteItem(QuizItemDTO dto) {
-        // Shuffle and format labels A, B, C, D if your DTO doesn't already do it
-        List<String> labeledOptions = new ArrayList<>();
-        char label = 'A';
-        for (String opt : dto.options) {
-            labeledOptions.add(label + ". " + opt);
-            label++;
+            // 4. Generate Numerical Buffer
+            if (targetNumericalCount > 0) {
+                int[] dist = calculateWeightedBuffer(numericalBufferTotal, mathWeights);
+                fetchAndRouteQuestions(rawText, dist, true);
+            }
+
+            // 5. Start the Quiz
+            SwingUtilities.invokeLater(() -> {
+                getGlassPane().setVisible(false);
+                if (isAllPoolsEmpty()) {
+                    difficultyLabel.setText("AI Error: Could not generate valid questions.");
+                } else {
+                    btnConfigQuiz.setVisible(false);
+                    btnScan.setVisible(false);
+                    countLabel.setVisible(false);
+                    questionCountSpinner.setVisible(false);
+                    clockTimer.setEditable(false);
+
+                    masteryContainer.setVisible(true);
+                    studentHistory.clear();
+                    updateAI(0);
+
+                    loadNextQuestion(currentLevel);
+                }
+            });
+        } catch (Exception e) {
+            SwingUtilities.invokeLater(() -> {
+                getGlassPane().setVisible(false);
+
+                // Catch the specific connection error
+                if (e.getMessage() != null && e.getMessage().contains("Connection refused")) {
+                    difficultyLabel.setText("System Offline: Please start Ollama.");
+                    JOptionPane.showMessageDialog(this,
+                            "Cannot connect to the local AI engine.\n\nPlease ensure Ollama is running (port 11434) and try again.",
+                            "Engine Offline",
+                            JOptionPane.ERROR_MESSAGE);
+                } else {
+                    difficultyLabel.setText("AI Error: " + e.getMessage());
+                }
+            });
+            throw e;
         }
-
-        // Find which label matches the correct answer
-        String finalLabeledAnswer = labeledOptions.get(0);
-        for (String labeled : labeledOptions) {
-            if (labeled.contains(dto.correctAnswer)) finalLabeledAnswer = labeled;
-        }
-
-        return new QuizItem(dto.question, dto.question, finalLabeledAnswer, labeledOptions, dto.difficulty);
-    }
-
-
-
-    // This replaces your manual Regex parsing logic
-    public class QuizItemDTO {
-        @Description("The clear and concise question text")
-        public String question;
-
-        @Description("Exactly 4 multiple choice options")
-        public List<String> options;
-
-        @Description("The correct answer from the options list")
-        public String correctAnswer;
-
-        @Description("Difficulty: EASY, MEDIUM, or HARD")
-        public String difficulty;
-    }
-
-    interface TutorAssistant {
-        @dev.langchain4j.service.SystemMessage("You are an adaptive AI tutor. Create structured questions based on the provided text.")
-        List<QuizItemDTO> generateQuestions(@dev.langchain4j.service.UserMessage String context, int count);
     }
 
     private void startTeacherWorkflow(String title, int eCount, int mCount, int hCount) {
