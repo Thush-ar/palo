@@ -57,6 +57,7 @@ public class OfflineTutorApp extends JFrame {
     private Clip zenClip;
     private VoiceAssistant tts;
     private boolean isSpeechEnabled = true;
+    private File currentChatFile = null;
 
     public void setSpeechEnabled(boolean enabled) { this.isSpeechEnabled = enabled; }
     public boolean isSpeechEnabled() { return isSpeechEnabled; }
@@ -803,17 +804,30 @@ public class OfflineTutorApp extends JFrame {
         cardLayout = new CardLayout();
         mainCardPanel = new JPanel(cardLayout);
         mainCardPanel.setBackground(new Color(28, 28, 28));
+
         focusPanel = new JPanel(new BorderLayout());
         focusPanel.setBackground(new Color(18, 18, 18));
         mainCardPanel.add(focusPanel, "FOCUS");
+
         setTitle("PaLO - Adaptive Learning Orchestrator");
-        setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
+
+        // CRITICAL: Prevent the window from closing automatically so the save logic can finish
+        setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
 
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
-                int response = JOptionPane.showConfirmDialog(null, "Exit PaLO entirely?", "Confirm Exit", JOptionPane.YES_NO_OPTION);
+                // Center the dialog on the frame
+                int response = JOptionPane.showConfirmDialog(
+                        OfflineTutorApp.this,
+                        "Exit PaLO entirely? Your chat history and progress will be saved.",
+                        "Confirm Exit",
+                        JOptionPane.YES_NO_OPTION,
+                        JOptionPane.QUESTION_MESSAGE
+                );
+
                 if (response == JOptionPane.YES_OPTION) {
+                    // Ensure all orchestrations are backed up
                     saveChatHistory();
                     saveProgress();
                     System.exit(0);
@@ -825,14 +839,20 @@ public class OfflineTutorApp extends JFrame {
         blankPlaceholder.setBackground(new Color(28, 28, 28));
         mainCardPanel.add(blankPlaceholder, "BLANK");
 
+        // Initialize individual module panels
         quizPanel = createQuizPanel();
         mainCardPanel.add(quizPanel, "QUIZ");
+
         chatPanel = createChatPanel();
         mainCardPanel.add(chatPanel, "CHAT");
+
         audioPanel = createAudioPanel();
         mainCardPanel.add(audioPanel, "AUDIO");
+
         setLayout(new BorderLayout());
         add(mainCardPanel, BorderLayout.CENTER);
+
+        // Default to a clean slate before the Dashboard takes over
         cardLayout.show(mainCardPanel, "BLANK");
         this.setVisible(false);
     }
@@ -1616,10 +1636,12 @@ public class OfflineTutorApp extends JFrame {
         String userMessage = chatInput.getText().trim();
         if (userMessage.isEmpty()) return;
 
+        // 1. Add User Bubble immediately to UI
         chatBox.add(new ChatBubble(userMessage, true));
         chatBox.add(Box.createRigidArea(new Dimension(0, 5)));
         chatInput.setText("");
 
+        // 2. Setup AI Response Bubble (Placeholder)
         ChatBubble aiResponseBubble = new ChatBubble("", false);
         chatBox.add(aiResponseBubble);
         chatBox.add(Box.createRigidArea(new Dimension(0, 5)));
@@ -1627,10 +1649,12 @@ public class OfflineTutorApp extends JFrame {
         JTextArea aiTextArea = aiResponseBubble.getTextArea();
         aiTextArea.setText("Thinking...");
 
+        // Initial UI Refresh
         chatBox.revalidate();
         chatBox.repaint();
         scrollToBottom();
 
+        // Lock UI to prevent overlapping prompts during generation
         chatInput.setEnabled(false);
         sendButton.setEnabled(false);
 
@@ -1638,6 +1662,7 @@ public class OfflineTutorApp extends JFrame {
             try {
                 llamaConnection.askStreaming(userMessage, new LlamaConnection.StreamHandler() {
                     boolean firstToken = true;
+
                     @Override
                     public void handleToken(String token) {
                         SwingUtilities.invokeLater(() -> {
@@ -1646,15 +1671,26 @@ public class OfflineTutorApp extends JFrame {
                                 firstToken = false;
                             }
                             aiTextArea.append(token);
+                            // Revalidate for long responses to ensure scrollbar moves
                             chatBox.revalidate();
                             scrollToBottom();
                         });
                     }
+
                     @Override
                     public void handleComplete() {
+                        // CRITICAL: Final UI sync before triggering the save logic
                         SwingUtilities.invokeLater(() -> {
                             finishGeneration();
+
+                            // Force a layout refresh so the Save Logic sees all components
+                            chatBox.revalidate();
+                            chatBox.repaint();
+
+                            // Save the full conversation (User + AI)
                             saveChatHistory();
+
+                            // Update the sidebar with the clean title and time
                             updateRecentChatsUI();
                         });
                     }
@@ -1671,23 +1707,50 @@ public class OfflineTutorApp extends JFrame {
     private void updateRecentChatsUI() {
         recentChatsPanel.removeAll();
         File folder = new File("chats/");
-        if (!folder.exists()) folder.mkdir();
+        if (!folder.exists()) folder.mkdirs();
+
         File[] files = folder.listFiles((dir, name) -> name.endsWith(".json"));
         if (files == null) return;
+
+        // Sort by last modified so newest chats are at the top
         Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+
+        // Unified Formatter: Always includes Date then Time
+        java.text.SimpleDateFormat dateTimeFormat = new java.text.SimpleDateFormat("dd MMM • hh:mm a");
 
         for (File f : files) {
             JPanel entryPanel = new JPanel(new BorderLayout(8, 0));
             entryPanel.setOpaque(false);
             entryPanel.setMaximumSize(new Dimension(280, 45));
 
-            String fileName = f.getName().replace(".json", "");
-            String displayName = fileName.length() > 18 ? fileName.substring(0, 16) + ".." : fileName;
+            // 1. Extract and Clean the Title
+            String rawName = f.getName().replace(".json", "");
+            String cleanName = rawName.replaceAll("_\\d{8}_\\d{6}$", "").replace("_", " ").trim();
 
-            JButton snippet = createSidebarPillButton(displayName, new Color(50, 50, 50));
-            snippet.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+            if (cleanName.length() > 0) {
+                cleanName = cleanName.substring(0, 1).toUpperCase() + cleanName.substring(1);
+            }
+
+            // 2. Format the Date and Time (Forced for all records)
+            long lastModTime = f.lastModified();
+            if (lastModTime == 0) lastModTime = System.currentTimeMillis();
+            String dateTimeLabel = dateTimeFormat.format(new java.util.Date(lastModTime));
+
+            // 3. Construct Final Label with Truncation
+            String displayTitle = cleanName;
+            // Tighten truncation to ensure the full date/time fits on the pill button
+            if (displayTitle.length() > 9) {
+                displayTitle = displayTitle.substring(0, 7) + "..";
+            }
+
+            // Result: "Hiii • 15 Apr • 05:51 PM"
+            String finalPillLabel = displayTitle + " • " + dateTimeLabel;
+
+            JButton snippet = createSidebarPillButton(finalPillLabel, new Color(50, 50, 50));
+            snippet.setFont(new Font("Segoe UI", Font.PLAIN, 10));
             snippet.addActionListener(e -> loadSpecificChat(f));
 
+            // --- Delete Button (X) ---
             JButton btnDel = new JButton("X") {
                 @Override
                 protected void paintComponent(Graphics g) {
@@ -1725,64 +1788,132 @@ public class OfflineTutorApp extends JFrame {
             recentChatsPanel.add(entryPanel);
             recentChatsPanel.add(Box.createRigidArea(new Dimension(0, 10)));
         }
+
+        // Explicitly refresh UI components
         recentChatsPanel.revalidate();
         recentChatsPanel.repaint();
     }
 
     private void loadSpecificChat(File file) {
+        // 1. Reset UI and update the session pointer
         chatBox.removeAll();
+        this.currentChatFile = file; // CRITICAL: Tells the app to save to THIS file for the rest of the session
+
         try (Scanner scanner = new Scanner(file)) {
+            if (!scanner.hasNext()) return;
+
             String content = scanner.useDelimiter("\\Z").next();
             JsonArray history = JsonParser.parseString(content).getAsJsonArray();
+
             for (int i = 0; i < history.size(); i++) {
                 JsonObject msg = history.get(i).getAsJsonObject();
                 String text = msg.get("text").getAsString();
                 boolean isUser = msg.get("isUser").getAsBoolean();
+
+                // Re-render the bubbles into the UI
                 chatBox.add(new ChatBubble(text, isUser));
                 chatBox.add(Box.createRigidArea(new Dimension(0, 5)));
             }
+
+            // 2. Finalize UI update
             chatBox.revalidate();
             chatBox.repaint();
             scrollToBottom();
+
         } catch (Exception e) {
+            System.err.println("Error loading chat file: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
     private void saveChatHistory() {
-        if (chatBox.getComponentCount() == 0) return;
+        if (chatBox == null || chatBox.getComponentCount() == 0) return;
+
         try {
             File folder = new File("chats/");
-            if (!folder.exists()) folder.mkdir();
-            String firstMsg = "New Chat";
+            if (!folder.exists()) {
+                folder.mkdirs();
+            }
+
             JsonArray history = new JsonArray();
+            String firstMsgText = "New_Chat";
+            boolean foundFirst = false;
 
             for (Component c : chatBox.getComponents()) {
                 if (c instanceof ChatBubble) {
                     ChatBubble b = (ChatBubble) c;
                     String text = b.getTextArea().getText();
-                    if (firstMsg.equals("New Chat")) firstMsg = text.replaceAll("[^a-zA-Z0-String 0-9]", " ").trim();
+                    if (text == null || text.trim().isEmpty()) continue;
+
+                    if (!foundFirst) {
+                        firstMsgText = text.replaceAll("[^a-zA-Z0-9]", "_").trim();
+                        if (firstMsgText.length() > 25) firstMsgText = firstMsgText.substring(0, 25);
+                        foundFirst = true;
+                    }
+
+                    // Reliability Fix: Identify sender by Avatar Label
+                    boolean isUser = false;
+                    for (Component child : b.getComponents()) {
+                        if (child instanceof JLabel) {
+                            String labelText = ((JLabel) child).getText();
+                            if ("T".equals(labelText)) {
+                                isUser = true;
+                                break;
+                            }
+                        }
+                    }
+
                     JsonObject obj = new JsonObject();
                     obj.addProperty("text", text);
-                    obj.addProperty("isUser", b.getAlignmentX() == Component.RIGHT_ALIGNMENT);
+                    obj.addProperty("isUser", isUser);
                     history.add(obj);
                 }
             }
-            String fileName = (firstMsg.length() > 20 ? firstMsg.substring(0, 20) : firstMsg) + ".json";
-            try (FileWriter writer = new FileWriter(new File(folder, fileName))) {
+
+            if (history.size() == 0) return;
+
+            // SESSION PERSISTENCE LOGIC:
+            // Only create a new filename if currentChatFile is null (new session).
+            // Otherwise, keep using the same file to prevent sidebar clutter.
+            if (currentChatFile == null) {
+                String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(new java.util.Date());
+                String fileName = firstMsgText + "_" + timestamp + ".json";
+                currentChatFile = new File(folder, fileName);
+            }
+
+            try (FileWriter writer = new FileWriter(currentChatFile)) {
                 writer.write(history.toString());
             }
+
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("Failed to save session: " + e.getMessage());
         }
     }
 
     private void startNewChat() {
+        // 1. Save the existing conversation before clearing the screen
         saveChatHistory();
+
+        // 2. IMPORTANT: Reset the session file pointer.
+        // This ensures the NEXT message triggers the creation of a brand new JSON file.
+        currentChatFile = null;
+
+        // 3. Clear the UI
         chatBox.removeAll();
+
+        // 4. Add the initial AI greeting
         chatBox.add(new ChatBubble("Hello! How can I help you today?", false));
+
+        // 5. Refresh the sidebar to show the chat we just saved
         updateRecentChatsUI();
+
+        // 6. Force UI to reflect changes
         chatBox.revalidate();
+        chatBox.repaint();
+
+        // 7. Optional: Reset input focus for better UX
+        chatInput.setText("");
+        chatInput.requestFocusInWindow();
     }
 
     private void scrollToBottom() {
@@ -2312,51 +2443,85 @@ public class OfflineTutorApp extends JFrame {
         if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
 
         File selectedFile = chooser.getSelectedFile();
-        logRecentFile(selectedFile.getName(), "Teacher Export", eCount + mCount + hCount);
-        JDialog progressDialog = new JDialog(this, "PaLO - Generating Quiz", true);
-        JLabel statusMsg = new JLabel("Extracting text from document...", SwingConstants.CENTER);
-        statusMsg.setBorder(BorderFactory.createEmptyBorder(20,20,20,20));
+        String sourceFileName = selectedFile.getName();
+        logRecentFile(sourceFileName, "Teacher Export", eCount + mCount + hCount);
+
+        JDialog progressDialog = new JDialog(this, "PaLO - Orchestrating Document", true);
+        JLabel statusMsg = new JLabel("Analyzing textbook structure...", SwingConstants.CENTER);
+        statusMsg.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
         progressDialog.add(statusMsg);
-        progressDialog.setSize(400, 150);
+        progressDialog.setSize(450, 150);
         progressDialog.setLocationRelativeTo(this);
 
         new Thread(() -> {
             try {
-                String extractedText = processPDF(selectedFile);
-                SwingUtilities.invokeLater(() -> statusMsg.setText("AI is generating questions (this may take a minute)..."));
-                List<QuizItem> exportList = new ArrayList<>();
+                // Grouped lists to ensure strict PDF sectioning
+                List<QuizItem> easyList = new ArrayList<>();
+                List<QuizItem> mediumList = new ArrayList<>();
+                List<QuizItem> hardList = new ArrayList<>();
 
-                if (eCount > 0) fetchForExport(extractedText, "EASY", eCount, exportList);
-                if (mCount > 0) fetchForExport(extractedText, "MEDIUM", mCount, exportList);
-                if (hCount > 0) fetchForExport(extractedText, "HARD", hCount, exportList);
+                try (org.apache.pdfbox.pdmodel.PDDocument document = org.apache.pdfbox.pdmodel.PDDocument.load(selectedFile)) {
+                    int totalPages = document.getNumberOfPages();
+                    int pagesPerBatch = 5;
+                    int totalBatches = (int) Math.ceil((double) totalPages / pagesPerBatch);
 
-                if (exportList.isEmpty()) throw new Exception("AI failed to generate valid XML. Check local Ollama console.");
+                    // Distribute requested counts across batches
+                    int ePerBatch = Math.max(0, (int) Math.ceil((double) eCount / totalBatches));
+                    int mPerBatch = Math.max(0, (int) Math.ceil((double) mCount / totalBatches));
+                    int hPerBatch = Math.max(0, (int) Math.ceil((double) hCount / totalBatches));
 
-                SwingUtilities.invokeLater(() -> statusMsg.setText("Creating PDF..."));
-                String savePath = generatePDF(exportList, title);
+                    for (int i = 0; i < totalPages; i += pagesPerBatch) {
+                        int start = i + 1;
+                        int end = Math.min(i + pagesPerBatch, totalPages);
+                        SwingUtilities.invokeLater(() -> statusMsg.setText("Processing Batch: Pages " + start + "-" + end));
+
+                        org.apache.pdfbox.text.PDFTextStripper stripper = new org.apache.pdfbox.text.PDFTextStripper();
+                        stripper.setStartPage(start); stripper.setEndPage(end);
+                        String chunkText = stripper.getText(document);
+
+                        // Fetch Easy, Medium, and Hard separately from each chunk
+                        if (easyList.size() < eCount)
+                            easyList.addAll(fetchQuestionsForExport(chunkText, "EASY", Math.min(ePerBatch, eCount - easyList.size()), false));
+                        if (mediumList.size() < mCount)
+                            mediumList.addAll(fetchQuestionsForExport(chunkText, "MEDIUM", Math.min(mPerBatch, mCount - mediumList.size()), false));
+                        if (hardList.size() < hCount)
+                            hardList.addAll(fetchQuestionsForExport(chunkText, "HARD", Math.min(hPerBatch, hCount - hardList.size()), false));
+                    }
+                }
+
+                // Combine in order: EASY -> MEDIUM -> HARD
+                List<QuizItem> finalExportList = new ArrayList<>();
+                finalExportList.addAll(easyList);
+                finalExportList.addAll(mediumList);
+                finalExportList.addAll(hardList);
+
+                if (finalExportList.isEmpty()) throw new Exception("AI failed to extract questions. Verify Ollama/Qwen is active.");
+
+                SwingUtilities.invokeLater(() -> statusMsg.setText("Finalizing Watermarked PDF..."));
+                String savePath = generatePDF(finalExportList, title, sourceFileName);
 
                 SwingUtilities.invokeLater(() -> {
                     progressDialog.dispose();
-                    JOptionPane.showMessageDialog(this,
-                            "Successfully created PDF!\nSaved at: " + savePath,
-                            "Generation Complete", JOptionPane.INFORMATION_MESSAGE);
+                    JOptionPane.showMessageDialog(this, "Success!\nSource: " + sourceFileName + "\nPath: " + savePath);
                 });
+
             } catch (Exception ex) {
                 ex.printStackTrace();
                 SwingUtilities.invokeLater(() -> {
                     progressDialog.dispose();
-                    JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage(), "Generation Failed", JOptionPane.ERROR_MESSAGE);
+                    JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage());
                 });
             }
         }).start();
         progressDialog.setVisible(true);
     }
 
-    private String generatePDF(List<QuizItem> items, String title) throws Exception {
+    private String generatePDF(List<QuizItem> items, String title, String sourceFileName) throws Exception {
         String userHome = System.getProperty("user.home");
         File dir = new File(userHome, "Documents/PaLO_Quizzes");
         if (!dir.exists()) dir.mkdirs();
         File pdfFile = new File(dir, title.replaceAll("[^a-zA-Z0-9]", "_") + ".pdf");
+
         try (org.apache.pdfbox.pdmodel.PDDocument doc = new org.apache.pdfbox.pdmodel.PDDocument()) {
             org.apache.pdfbox.pdmodel.PDPage page = new org.apache.pdfbox.pdmodel.PDPage();
             doc.addPage(page);
@@ -2367,30 +2532,46 @@ public class OfflineTutorApp extends JFrame {
             String currentDiff = "";
             int questionNumber = 1;
 
-            org.apache.pdfbox.pdmodel.PDPageContentStream content = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page);
+            applyBrandedWatermark(doc, page, title);
+
+            org.apache.pdfbox.pdmodel.PDPageContentStream content = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page, org.apache.pdfbox.pdmodel.PDPageContentStream.AppendMode.APPEND, true, true);
+
+            // 1. Sanitize Header Title
             content.beginText();
             content.setFont(org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA_BOLD, 18);
             content.newLineAtOffset(margin, y);
-            content.showText(title.toUpperCase());
+            content.showText(clean(title.toUpperCase()));
             content.endText();
+
+            // 2. Sanitize Source Citation
+            y -= 20;
+            content.beginText();
+            content.setFont(org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA_OBLIQUE, 9);
+            content.setNonStrokingColor(100, 100, 100);
+            content.newLineAtOffset(margin, y);
+            content.showText("Source Document: " + clean(sourceFileName));
+            content.endText();
+            content.setNonStrokingColor(0, 0, 0);
+
             y -= 40;
 
             for (QuizItem item : items) {
                 if (!item.originalContext.equals(currentDiff)) {
                     currentDiff = item.originalContext;
                     questionNumber = 1;
-                    y -= 15;
-                    if (y < 100) {
+                    y -= 20;
+                    if (y < 150) {
                         content.close();
                         page = new org.apache.pdfbox.pdmodel.PDPage();
                         doc.addPage(page);
-                        content = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page);
+                        applyBrandedWatermark(doc, page, title);
+                        content = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page, org.apache.pdfbox.pdmodel.PDPageContentStream.AppendMode.APPEND, true, true);
                         y = startY;
                     }
                     content.beginText();
                     content.setFont(org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA_BOLD, 14);
                     content.newLineAtOffset(margin, y);
-                    content.showText("SECTION: " + currentDiff + " QUESTIONS");
+                    content.showText("SECTION: " + clean(currentDiff) + " QUESTIONS");
                     content.endText();
                     y -= 25;
                 }
@@ -2399,43 +2580,79 @@ public class OfflineTutorApp extends JFrame {
                     content.close();
                     page = new org.apache.pdfbox.pdmodel.PDPage();
                     doc.addPage(page);
-                    content = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page);
+                    applyBrandedWatermark(doc, page, title);
+                    content = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page, org.apache.pdfbox.pdmodel.PDPageContentStream.AppendMode.APPEND, true, true);
                     y = startY;
                 }
 
+                // 3. Sanitize Question Text
                 content.beginText();
                 content.setFont(org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA_BOLD, 11);
                 content.newLineAtOffset(margin, y);
-                String fullQuestionText = questionNumber + ". " + item.questionText;
-
-                if (fullQuestionText.length() > 95) {
-                    content.showText(fullQuestionText.substring(0, 90));
-                    y -= 15;
-                    content.endText();
-                    content.beginText();
-                    content.newLineAtOffset(margin + 15, y);
-                    content.showText(fullQuestionText.substring(90));
+                String fullQ = clean(questionNumber + ". " + item.questionText);
+                if (fullQ.length() > 95) {
+                    content.showText(fullQ.substring(0, 90) + "...");
                 } else {
-                    content.showText(fullQuestionText);
+                    content.showText(fullQ);
                 }
                 content.endText();
                 y -= 18;
 
+                // 4. Sanitize Options
                 content.setFont(org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA, 10);
                 for (String opt : item.options) {
                     content.beginText();
                     content.newLineAtOffset(margin + 20, y);
-                    content.showText(opt);
+                    content.showText(clean(opt));
                     content.endText();
                     y -= 14;
                 }
-                y -= 12;
+                y -= 15;
                 questionNumber++;
             }
             content.close();
             doc.save(pdfFile);
         }
         return pdfFile.getAbsolutePath();
+    }
+
+    /**
+     * Removes newlines and control characters that crash PDFBox font encoding.
+     */
+    private String clean(String text) {
+        if (text == null) return "";
+        return text.replace("\n", " ").replace("\r", " ").replace("\t", " ").trim();
+    }
+
+    private void applyBrandedWatermark(org.apache.pdfbox.pdmodel.PDDocument doc, org.apache.pdfbox.pdmodel.PDPage page, String title) throws Exception {
+        // PREPEND ensures the watermark remains on the background layer
+        try (org.apache.pdfbox.pdmodel.PDPageContentStream cs = new org.apache.pdfbox.pdmodel.PDPageContentStream(doc, page, org.apache.pdfbox.pdmodel.PDPageContentStream.AppendMode.PREPEND, true, true)) {
+
+            org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState gs = new org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState();
+            // Increased alpha to 0.18f for a more defined 'greyed out' look
+            gs.setNonStrokingAlphaConstant(0.18f);
+            cs.setGraphicsStateParameters(gs);
+
+            // Darker grey (150) for that professional exam paper aesthetic
+            cs.setNonStrokingColor(150, 150, 150);
+
+            // Sanitize Watermark Text
+            String watermarkText = clean("PaLO - " + title.toUpperCase());
+
+            // Diagonal Tiling Logic
+            for (int yCoord = -100; yCoord < 1000; yCoord += 180) {
+                for (int xCoord = -100; xCoord < 800; xCoord += 250) {
+                    cs.beginText();
+                    cs.setFont(org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA_BOLD, 14);
+
+                    // 45-degree rotation for the classic board-exam appearance
+                    cs.setTextMatrix(org.apache.pdfbox.util.Matrix.getRotateInstance(Math.toRadians(45), xCoord, yCoord));
+
+                    cs.showText(watermarkText);
+                    cs.endText();
+                }
+            }
+        }
     }
 
     private void stopZenMusic() {
