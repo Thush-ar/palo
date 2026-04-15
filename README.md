@@ -48,6 +48,7 @@ These are the features we have implemented till now (not perfect but still). Sug
 
 ###HOW TO RUN THE APPLICATION:
 *The setup is currently in 'Hard Mode',but if you can handle a little manual labor, you're good to go.Once we create the executable it would go wayyy smootherrr*
+
 (ENSURE OLLAMA IS INSTALLED ON YOUR SYSTEM FOR THE APPLICATION TO FUNCTION CORRECTLY!)
 1. Clone the repository: 
 ```bash
@@ -55,6 +56,7 @@ git clone [https://github.com/Thush-ar/palo.git](https://github.com/Thush-ar/pal
 ```
 
 or download the zip file.
+
 2. Import the file into preferred IDE (with maven). Allow Maven to resolve and download all POM dependencies.
 4. Click on src/main/java/OfflineTutorApp. Run the program by selecting "current file". (Ensure selected code to run should be "OfflineTutorApp", and not "PaLODashboardDemo".
 
