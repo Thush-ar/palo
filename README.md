@@ -29,7 +29,8 @@ These are the features we have implemented till now (not perfect but still). Sug
 - Ollama:
    - Check out ollama GitHub repository : https://github.com/ollama/ollama
    - Install Ollama from: https://ollama.com/ (Installer is OS specific. Make sure you install the right one)
-   - instal AI models:
+   - install AI models:
+     
   **Pull the required models** (Works on macOS/Linux terminal or Windows PowerShell/CMD):
 
    ```bash
