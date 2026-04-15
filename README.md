@@ -53,7 +53,7 @@ These are the features we have implemented till now (not perfect but still). Sug
 (ENSURE OLLAMA IS INSTALLED ON YOUR SYSTEM FOR THE APPLICATION TO FUNCTION CORRECTLY!)
 1. Clone the repository: 
 ```bash
-git clone [https://github.com/Thush-ar/palo.git](https://github.com/Thush-ar/palo.git)
+git clone https://github.com/Thush-ar/palo.git
 ```
 
 or download the zip file.
