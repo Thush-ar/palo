@@ -1,6 +1,6 @@
 PaLO: Progressive and Audio Assisted Learning Orchestrator
 
-###PROJECT OVERVIEW:
+###PROJECT OVERVIEW:###
 PaLO is an application that helps people learn and study better. It is a computer program that you can use on your desktop without needing the internet connection at all. PaLO is helpful for students and teachers. It uses Large Language Models (LLMs) to help you learn, which works completely offline. This project combines ways of studying with new and intelligent ways of teaching. It uses language models like Llama3.2 and Qwen2.5 that are stored locally on your computer. These models can  scan papers and pictures and make quizzes for you. The quizzes get harder or easier depending on how well you do. This project also has an algorithm that will figure out how hard the quizzes should be. It looks at how well you are doing and makes the questions harder or easier. This way you are always learning something, and you are not getting bored.
 
 ###KEY FEATURES: 
