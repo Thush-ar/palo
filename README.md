@@ -40,7 +40,7 @@ These are the features we have implemented till now (not perfect but still). Sug
    **Run to check whether the LLM works**:
 
    ```bash
-   ollama run qwen2.5:1,5b
+   ollama run qwen2.5:1.5b
    ```
 
 (BELOW TOOLS ARE PREPACKAGED WITH THE APPLICATION/IDE, INSTALL THEM ONLY IF ANY ERROR OCCURS.)
